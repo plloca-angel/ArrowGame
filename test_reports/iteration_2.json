@@ -1,0 +1,30 @@
+{
+  "summary": "Mobile Playwright frontend testing on Expo web preview (390x844). All core flows pass: home render, PLAY navigation, LEVEL SELECT with 18 tiles, Level 1 win path (arrow-1-0 then arrow-1-1), lose path (arrow-1-1 first), retry, NEXT to level 2 (3/3 arrows), back navigation, CONTINUE · LV 2 on home, stat-completed=1, level 2 unlocked after win, level 1 shows 3 stars cyan tile. Found ONE state bug: levels-reset-btn after a win does NOT lock level 2 back (tile still shows '2' instead of lock icon). Root cause is DEFAULT_PROGRESS object mutation in storage.ts.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "src/storage.ts resetProgress/loadProgress", "issue": "After winning Level 1, tapping levels-reset-btn does NOT lock Level 2 again. The tile still renders '2' (unlocked) instead of a lock icon. RCA: DEFAULT_PROGRESS is a shared module-level constant. loadProgress returns the SAME reference when storage is empty, and recordWin mutates p.completed[levelId]=... and p.highestUnlocked=... DIRECTLY on that shared object. resetProgress then returns the already-mutated DEFAULT_PROGRESS, so highestUnlocked stays 2 and completed still has level 1 stars. Fix: clone in every return, e.g. `return { highestUnlocked: 1, completed: {} };` inside loadProgress fallback AND resetProgress; or deep-clone before mutation in recordWin.", "testID": "levels-reset-btn / level-tile-2", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "index.tsx / game.tsx", "issue": "Deprecation warnings: shadow*/textShadow* style props are deprecated (use boxShadow/textShadow), and props.pointerEvents is deprecated (use style.pointerEvents). Cosmetic only - app still renders correctly."}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_2.json"],
+  "action_items": [
+    "Fix DEFAULT_PROGRESS mutation bug in /app/frontend/src/storage.ts: Either (a) have loadProgress/resetProgress always return a fresh object literal {highestUnlocked:1, completed:{}} instead of the shared DEFAULT_PROGRESS constant, or (b) deep-clone progress in recordWin before mutating. This fixes the 'reset after win does not relock levels' bug.",
+    "(Optional, cosmetic) Migrate shadow*/textShadow*/pointerEvents props to their new RN API to silence console warnings."
+  ],
+  "critical_code_review_comments": [
+    "storage.ts: DEFAULT_PROGRESS is a shared mutable module-level constant; returning it by reference from loadProgress (when key is absent) and from resetProgress, while recordWin mutates it, is a classic aliasing bug.",
+    "game.tsx: recordWin is called with `moves + 1` on final-arrow escape, but the star calculation in the modal also uses `moves` which is already incremented via setMoves before animation finishes. Values happen to line up for L1 (3 stars shown, 3 stars stored) but double-check that display stars == stored stars for all cases."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "~93% (13/14 scenarios pass; reset-after-win fails)"},
+  "seed_data_creation": "None. AsyncStorage key 'arrow_escape_progress_v1' is manipulated via UI reset button.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All 14 requested scenarios were exercised on mobile viewport 390x844. Only failure: levels-reset-btn after winning level 1 does not re-lock level 2. Level 2 tile still renders '2'. Bug is purely in src/storage.ts (DEFAULT_PROGRESS mutation / shared reference). After fix, verify: (1) win L1, (2) back to /levels, (3) tap levels-reset-btn, (4) level-tile-2 should contain a lock icon (no text '2'), (5) home stat-completed should read 0, (6) home play button should read 'PLAY' not 'CONTINUE · LV 2'.",
+  "rca_of_issue": "DEFAULT_PROGRESS = { highestUnlocked:1, completed:{} } at module scope. loadProgress returns DEFAULT_PROGRESS by reference when the AsyncStorage key is missing. recordWin then does `p.completed[levelId] = {...}` and `p.highestUnlocked = Math.max(...)` which mutates the shared constant. Later resetProgress returns the same (now mutated) constant, so the 'reset' appears to do nothing for state that was seeded from DEFAULT_PROGRESS. Fix: replace `return DEFAULT_PROGRESS` with `return { highestUnlocked:1, completed:{} }` in both loadProgress fallback and resetProgress (and ideally deep-clone completed in recordWin)."
+}
