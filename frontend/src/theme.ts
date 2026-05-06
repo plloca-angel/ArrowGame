@@ -1,23 +1,68 @@
-// Minimalist neon theme tokens
-export const COLORS = {
-  bg: "#05060a",
-  bgElev: "#0b0e17",
-  surface: "#10131f",
-  border: "#1c2236",
-  text: "#e6e9f5",
-  textDim: "#7d83a3",
-  textMuted: "#4b5174",
-  // Neon accents
-  cyan: "#00f0ff",
-  cyanGlow: "rgba(0, 240, 255, 0.35)",
-  magenta: "#ff2bd6",
-  magentaGlow: "rgba(255, 43, 214, 0.35)",
-  yellow: "#f8ff5c",
-  green: "#39ff88",
-  red: "#ff3a5e",
-  redGlow: "rgba(255, 58, 94, 0.4)",
-  star: "#ffd84a",
+// Theme tokens with variants for accessibility/customization
+export type ThemeVariant = "cyan" | "magenta" | "green";
+
+const PALETTES: Record<
+  ThemeVariant,
+  { primary: string; primaryGlow: string; secondary: string; secondaryGlow: string }
+> = {
+  cyan: {
+    primary: "#00f0ff",
+    primaryGlow: "rgba(0, 240, 255, 0.35)",
+    secondary: "#ff2bd6",
+    secondaryGlow: "rgba(255, 43, 214, 0.35)",
+  },
+  magenta: {
+    primary: "#ff2bd6",
+    primaryGlow: "rgba(255, 43, 214, 0.4)",
+    secondary: "#00f0ff",
+    secondaryGlow: "rgba(0, 240, 255, 0.35)",
+  },
+  green: {
+    primary: "#39ff88",
+    primaryGlow: "rgba(57, 255, 136, 0.35)",
+    secondary: "#ffe45c",
+    secondaryGlow: "rgba(255, 228, 92, 0.3)",
+  },
 };
+
+const COLOR_BLIND_SAFE = {
+  primary: "#ffffff",
+  primaryGlow: "rgba(255, 255, 255, 0.35)",
+  secondary: "#ffb000",
+  secondaryGlow: "rgba(255, 176, 0, 0.4)",
+};
+
+export type ThemeOpts = {
+  variant?: ThemeVariant;
+  highContrast?: boolean;
+  colorBlindSafe?: boolean;
+};
+
+export function getColors(opts: ThemeOpts = {}) {
+  const { variant = "cyan", highContrast, colorBlindSafe } = opts;
+  const palette = colorBlindSafe ? COLOR_BLIND_SAFE : PALETTES[variant];
+  return {
+    bg: highContrast ? "#000000" : "#05060a",
+    bgElev: highContrast ? "#0a0a0a" : "#0b0e17",
+    surface: highContrast ? "#111111" : "#10131f",
+    border: highContrast ? "#3a3a3a" : "#1c2236",
+    text: "#f5f7ff",
+    textDim: highContrast ? "#cfcfcf" : "#7d83a3",
+    textMuted: highContrast ? "#9a9a9a" : "#4b5174",
+    cyan: palette.primary,
+    cyanGlow: palette.primaryGlow,
+    magenta: palette.secondary,
+    magentaGlow: palette.secondaryGlow,
+    yellow: "#f8ff5c",
+    green: "#39ff88",
+    red: "#ff3a5e",
+    redGlow: "rgba(255, 58, 94, 0.4)",
+    star: "#ffd84a",
+  };
+}
+
+// Default static export for non-themed screens
+export const COLORS = getColors();
 
 export const RADIUS = {
   sm: 8,

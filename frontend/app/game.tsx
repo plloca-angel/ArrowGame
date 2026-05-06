@@ -12,10 +12,17 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { COLORS, RADIUS, SPACING } from "../src/theme";
+import { useSettings } from "../src/SettingsContext";
 import { Direction, DIR_VEC, getLevel, Level } from "../src/levels";
-import { recordWin } from "../src/storage";
+import {
+  recordWin,
+  loadEntitlements,
+  consumeHint,
+  skipLevel,
+  Entitlements,
+} from "../src/storage";
+import { RADIUS, SPACING } from "../src/theme";
+import { AdBanner } from "../src/AdBanner";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -28,6 +35,7 @@ type ArrowState = {
   anim: Animated.ValueXY;
   fade: Animated.Value;
   rotateShake: Animated.Value;
+  hintPulse: Animated.Value;
 };
 
 type GameStatus = "playing" | "won" | "lost";
@@ -43,16 +51,17 @@ export default function Game() {
   const { level: levelParam } = useLocalSearchParams<{ level?: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { colors, haptic, settings } = useSettings();
 
   const levelId = Math.max(1, parseInt(levelParam || "1", 10) || 1);
   const level: Level = useMemo(() => getLevel(levelId), [levelId]);
 
-  // Compute cell size based on actual measured container (more reliable than Dimensions on web)
+  // Container measurement
   const [containerW, setContainerW] = useState(
     Math.min(Dimensions.get("window").width - SPACING.md * 2, 420)
   );
-  const maxBoardWidth = Math.min(containerW, 420);
-  const cellSize = Math.max(40, Math.floor(maxBoardWidth / level.cols));
+  const maxBoardWidth = Math.min(containerW, 480);
+  const cellSize = Math.max(28, Math.floor(maxBoardWidth / level.cols));
   const boardW = cellSize * level.cols;
   const boardH = cellSize * level.rows;
 
@@ -62,6 +71,12 @@ export default function Game() {
   const [moves, setMoves] = useState(0);
   const [animating, setAnimating] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
+  const [ents, setEnts] = useState<Entitlements | null>(null);
+  const [hintHighlight, setHintHighlight] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadEntitlements().then(setEnts);
+  }, [resetSignal, status]);
 
   // Initialize arrows from level
   useEffect(() => {
@@ -74,18 +89,18 @@ export default function Game() {
       anim: new Animated.ValueXY({ x: a.col * cellSize, y: a.row * cellSize }),
       fade: new Animated.Value(1),
       rotateShake: new Animated.Value(0),
+      hintPulse: new Animated.Value(0),
     }));
     setArrows(init);
     arrowsRef.current = init;
     setStatus("playing");
     setMoves(0);
     setAnimating(false);
+    setHintHighlight(null);
   }, [level, cellSize, resetSignal]);
 
   const occupiedAt = useCallback(
     (r: number, c: number, list: ArrowState[]) => {
-      // walls
-      if (level.walls?.some((w) => w.row === r && w.col === c)) return "wall";
       const hit = list.find(
         (a) =>
           a.status !== "escaped" &&
@@ -95,7 +110,7 @@ export default function Game() {
       );
       return hit ? "arrow" : null;
     },
-    [level]
+    []
   );
 
   const computeFlight = useCallback(
@@ -119,12 +134,12 @@ export default function Game() {
   const fireArrow = (arrow: ArrowState) => {
     if (animating || status !== "playing") return;
     if (arrow.status !== "idle") return;
+    setHintHighlight(null);
 
     const flight = computeFlight(arrow, arrowsRef.current);
     setAnimating(true);
     setMoves((m) => m + 1);
 
-    // Mark flying
     const newList = arrowsRef.current.map((a) =>
       a.id === arrow.id ? { ...a, status: "flying" as ArrowStatus } : a
     );
@@ -137,9 +152,10 @@ export default function Game() {
       Math.abs(flight.row - arrow.row),
       Math.abs(flight.col - arrow.col)
     );
-    const duration = Math.max(160, dist * 80);
+    const baseDuration = settings.reducedMotion ? 80 : 80;
+    const duration = Math.max(140, dist * baseDuration);
 
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    haptic("light");
 
     Animated.timing(arrow.anim, {
       toValue: { x: targetX, y: targetY },
@@ -148,9 +164,7 @@ export default function Game() {
       useNativeDriver: false,
     }).start(() => {
       if (flight.result === "escape") {
-        Haptics.notificationAsync(
-          Haptics.NotificationFeedbackType.Success
-        ).catch(() => {});
+        haptic("success");
         Animated.timing(arrow.fade, {
           toValue: 0,
           duration: 180,
@@ -165,32 +179,34 @@ export default function Game() {
           checkWin(updated);
         });
       } else {
-        // collision
-        Haptics.notificationAsync(
-          Haptics.NotificationFeedbackType.Error
-        ).catch(() => {});
-        // shake
-        Animated.sequence([
-          Animated.timing(arrow.rotateShake, {
-            toValue: 1,
-            duration: 60,
-            useNativeDriver: false,
-          }),
-          Animated.timing(arrow.rotateShake, {
-            toValue: -1,
-            duration: 60,
-            useNativeDriver: false,
-          }),
-          Animated.timing(arrow.rotateShake, {
-            toValue: 0,
-            duration: 60,
-            useNativeDriver: false,
-          }),
-        ]).start();
-        // mark broken on this arrow + the one it hit (if arrow)
+        haptic("error");
+        if (!settings.reducedMotion) {
+          Animated.sequence([
+            Animated.timing(arrow.rotateShake, {
+              toValue: 1,
+              duration: 60,
+              useNativeDriver: false,
+            }),
+            Animated.timing(arrow.rotateShake, {
+              toValue: -1,
+              duration: 60,
+              useNativeDriver: false,
+            }),
+            Animated.timing(arrow.rotateShake, {
+              toValue: 0,
+              duration: 60,
+              useNativeDriver: false,
+            }),
+          ]).start();
+        }
         let updated = arrowsRef.current.map((a) =>
           a.id === arrow.id
-            ? { ...a, status: "broken" as ArrowStatus, row: flight.row, col: flight.col }
+            ? {
+                ...a,
+                status: "broken" as ArrowStatus,
+                row: flight.row,
+                col: flight.col,
+              }
             : a
         );
         if (flight.occ === "arrow") {
@@ -206,7 +222,6 @@ export default function Game() {
         }
         arrowsRef.current = updated;
         setArrows(updated);
-        // fade broken arrows
         updated
           .filter((a) => a.status === "broken")
           .forEach((a) =>
@@ -231,20 +246,76 @@ export default function Game() {
   };
 
   const onRestart = () => {
-    Haptics.selectionAsync().catch(() => {});
+    haptic("selection");
     setResetSignal((s) => s + 1);
   };
 
   const onNext = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    haptic("medium");
     router.replace({
       pathname: "/game",
       params: { level: String(levelId + 1) },
     });
   };
 
+  const onSkip = async () => {
+    haptic("warning");
+    await skipLevel(levelId);
+    router.replace({
+      pathname: "/game",
+      params: { level: String(levelId + 1) },
+    });
+  };
+
+  const onHint = async () => {
+    if (!ents || ents.hintCredits <= 0 || animating || status !== "playing") {
+      if (!ents || ents.hintCredits <= 0) {
+        haptic("warning");
+        router.push("/store");
+      }
+      return;
+    }
+    haptic("medium");
+    // Hint: highlight the next arrow that is safe to fire (any idle arrow with clear path)
+    const next = arrowsRef.current.find((a) => {
+      if (a.status !== "idle") return false;
+      const flight = computeFlight(a, arrowsRef.current);
+      return flight.result === "escape";
+    });
+    if (next) {
+      const updated = await consumeHint();
+      setEnts(updated);
+      setHintHighlight(next.id);
+      // pulse animation
+      if (!settings.reducedMotion) {
+        Animated.sequence([
+          Animated.timing(next.hintPulse, {
+            toValue: 1,
+            duration: 300,
+            useNativeDriver: false,
+          }),
+          Animated.timing(next.hintPulse, {
+            toValue: 0,
+            duration: 300,
+            useNativeDriver: false,
+          }),
+          Animated.timing(next.hintPulse, {
+            toValue: 1,
+            duration: 300,
+            useNativeDriver: false,
+          }),
+          Animated.timing(next.hintPulse, {
+            toValue: 0,
+            duration: 300,
+            useNativeDriver: false,
+          }),
+        ]).start();
+      }
+    }
+  };
+
   const onBack = () => {
-    Haptics.selectionAsync().catch(() => {});
+    haptic("selection");
     router.back();
   };
 
@@ -256,7 +327,13 @@ export default function Game() {
         key={`v${i}`}
         style={[
           styles.gridLine,
-          { left: i * cellSize, top: 0, width: 1, height: boardH },
+          {
+            backgroundColor: colors.border,
+            left: i * cellSize,
+            top: 0,
+            width: 1,
+            height: boardH,
+          },
         ]}
       />
     );
@@ -267,19 +344,30 @@ export default function Game() {
         key={`h${i}`}
         style={[
           styles.gridLine,
-          { top: i * cellSize, left: 0, height: 1, width: boardW },
+          {
+            backgroundColor: colors.border,
+            top: i * cellSize,
+            left: 0,
+            height: 1,
+            width: boardW,
+          },
         ]}
       />
     );
   }
 
-  const arrowSize = Math.floor(cellSize * 0.62);
+  const arrowSizeFactor = settings.largeArrows ? 0.78 : 0.62;
+  const arrowSize = Math.max(12, Math.floor(cellSize * arrowSizeFactor));
+
+  const idleArrows = arrows.filter(
+    (a) => a.status === "idle" || a.status === "flying"
+  ).length;
 
   return (
     <View
       style={[
         styles.container,
-        { paddingTop: insets.top + SPACING.sm },
+        { backgroundColor: colors.bg, paddingTop: insets.top + SPACING.sm },
       ]}
       testID="game-screen"
     >
@@ -291,11 +379,13 @@ export default function Game() {
           style={styles.iconBtn}
           hitSlop={12}
         >
-          <Ionicons name="chevron-back" size={24} color={COLORS.text} />
+          <Ionicons name="chevron-back" size={24} color={colors.text} />
         </Pressable>
         <View style={styles.headerCenter}>
-          <Text style={styles.headerEyebrow}>LEVEL</Text>
-          <Text style={styles.headerTitle} testID="game-level-id">
+          <Text style={[styles.headerEyebrow, { color: colors.textMuted }]}>
+            LEVEL
+          </Text>
+          <Text style={[styles.headerTitle, { color: colors.text }]} testID="game-level-id">
             {levelId.toString().padStart(2, "0")}
           </Text>
         </View>
@@ -305,23 +395,42 @@ export default function Game() {
           style={styles.iconBtn}
           hitSlop={12}
         >
-          <Ionicons name="refresh" size={22} color={COLORS.text} />
+          <Ionicons name="refresh" size={22} color={colors.text} />
         </Pressable>
       </View>
 
       {/* Stats */}
-      <View style={styles.statsBar}>
+      <View
+        style={[
+          styles.statsBar,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
         <View style={styles.statBlock}>
-          <Text style={styles.statLabel}>ARROWS</Text>
-          <Text style={styles.statValue} testID="stat-arrows">
-            {arrows.filter((a) => a.status === "idle" || a.status === "flying").length}
-            /{arrows.length}
+          <Text style={[styles.statLabel, { color: colors.textMuted }]}>
+            ARROWS
+          </Text>
+          <Text style={[styles.statValue, { color: colors.cyan }]} testID="stat-arrows">
+            {idleArrows}/{arrows.length}
           </Text>
         </View>
         <View style={styles.statBlock}>
-          <Text style={styles.statLabel}>MOVES</Text>
-          <Text style={[styles.statValue, { color: COLORS.magenta }]} testID="stat-moves">
+          <Text style={[styles.statLabel, { color: colors.textMuted }]}>
+            MOVES
+          </Text>
+          <Text
+            style={[styles.statValue, { color: colors.magenta }]}
+            testID="stat-moves"
+          >
             {moves}
+          </Text>
+        </View>
+        <View style={styles.statBlock}>
+          <Text style={[styles.statLabel, { color: colors.textMuted }]}>
+            GRID
+          </Text>
+          <Text style={[styles.statValue, { color: colors.text, fontSize: 16 }]}>
+            {level.rows}×{level.cols}
           </Text>
         </View>
       </View>
@@ -331,40 +440,28 @@ export default function Game() {
         style={styles.boardWrap}
         onLayout={(e) => {
           const w = e.nativeEvent.layout.width - SPACING.md * 2;
-          if (w > 0 && Math.abs(w - containerW) > 4) {
-            setContainerW(w);
-          }
+          if (w > 0 && Math.abs(w - containerW) > 4) setContainerW(w);
         }}
       >
         <View
           style={[
             styles.board,
-            { width: boardW, height: boardH },
+            {
+              width: boardW,
+              height: boardH,
+              backgroundColor: colors.bgElev,
+              borderColor: colors.border,
+            },
           ]}
           testID="game-board"
         >
           {gridLines}
-          {/* Walls */}
-          {level.walls?.map((w, i) => (
-            <View
-              key={`wall-${i}`}
-              style={[
-                styles.wall,
-                {
-                  left: w.col * cellSize,
-                  top: w.row * cellSize,
-                  width: cellSize,
-                  height: cellSize,
-                },
-              ]}
-            />
-          ))}
-          {/* Arrows */}
           {arrows.map((a) => {
             const rotation = a.rotateShake.interpolate({
               inputRange: [-1, 0, 1],
               outputRange: ["-12deg", "0deg", "12deg"],
             });
+            const isHinted = hintHighlight === a.id;
             return (
               <Animated.View
                 key={a.id}
@@ -384,25 +481,32 @@ export default function Game() {
               >
                 <Pressable
                   testID={`arrow-${a.id}`}
+                  accessibilityLabel={`Arrow pointing ${a.direction}`}
                   onPress={() => fireArrow(a)}
-                  disabled={a.status !== "idle" || animating || status !== "playing"}
+                  disabled={
+                    a.status !== "idle" || animating || status !== "playing"
+                  }
                   style={({ pressed }) => [
                     styles.arrowBtn,
                     {
                       width: cellSize - 6,
                       height: cellSize - 6,
                       backgroundColor:
-                        a.status === "broken"
-                          ? COLORS.surface
-                          : COLORS.bgElev,
+                        a.status === "broken" ? colors.surface : colors.bgElev,
                       borderColor:
                         a.status === "broken"
-                          ? COLORS.red
+                          ? colors.red
                           : a.status === "escaped"
-                          ? COLORS.green
-                          : COLORS.cyan,
+                          ? colors.green
+                          : isHinted
+                          ? colors.yellow
+                          : colors.cyan,
                       shadowColor:
-                        a.status === "broken" ? COLORS.red : COLORS.cyan,
+                        a.status === "broken"
+                          ? colors.red
+                          : isHinted
+                          ? colors.yellow
+                          : colors.cyan,
                     },
                     pressed && a.status === "idle" && { transform: [{ scale: 0.92 }] },
                   ]}
@@ -414,14 +518,14 @@ export default function Game() {
                         fontSize: arrowSize,
                         color:
                           a.status === "broken"
-                            ? COLORS.red
+                            ? colors.red
                             : a.status === "escaped"
-                            ? COLORS.green
-                            : COLORS.cyan,
+                            ? colors.green
+                            : isHinted
+                            ? colors.yellow
+                            : colors.cyan,
                         textShadowColor:
-                          a.status === "broken"
-                            ? COLORS.redGlow
-                            : COLORS.cyanGlow,
+                          a.status === "broken" ? colors.redGlow : colors.cyanGlow,
                       },
                     ]}
                   >
@@ -434,11 +538,66 @@ export default function Game() {
         </View>
       </View>
 
-      {level.hint && levelId === 1 && status === "playing" && (
-        <Text style={styles.hint} testID="game-hint">
-          {level.hint}
-        </Text>
-      )}
+      {/* Action bar - hint + skip */}
+      <View style={styles.actionBar}>
+        <Pressable
+          testID="game-hint-btn"
+          onPress={onHint}
+          disabled={animating || status !== "playing"}
+          style={({ pressed }) => [
+            styles.actionChip,
+            {
+              backgroundColor: colors.surface,
+              borderColor:
+                ents && ents.hintCredits > 0 ? colors.yellow : colors.border,
+              opacity: pressed ? 0.7 : 1,
+            },
+          ]}
+        >
+          <Ionicons name="bulb" size={16} color={colors.yellow} />
+          <Text style={[styles.actionLabel, { color: colors.text }]}>
+            HINT
+          </Text>
+          <View
+            style={[
+              styles.actionCounter,
+              {
+                backgroundColor:
+                  ents && ents.hintCredits > 0
+                    ? colors.yellow
+                    : colors.textMuted,
+              },
+            ]}
+          >
+            <Text style={styles.actionCounterText}>
+              {ents?.hintCredits ?? 0}
+            </Text>
+          </View>
+        </Pressable>
+
+        <Pressable
+          testID="game-skip-btn"
+          onPress={onSkip}
+          style={({ pressed }) => [
+            styles.actionChip,
+            {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+              opacity: pressed ? 0.7 : 1,
+            },
+          ]}
+        >
+          <Ionicons name="play-skip-forward" size={16} color={colors.textDim} />
+          <Text style={[styles.actionLabel, { color: colors.text }]}>
+            SKIP
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Banner ad at bottom */}
+      <View style={{ marginBottom: insets.bottom + SPACING.sm }}>
+        <AdBanner />
+      </View>
 
       {/* Win/Lose Modal */}
       <Modal
@@ -451,19 +610,23 @@ export default function Game() {
           <View
             style={[
               styles.modal,
-              status === "won" ? styles.modalWon : styles.modalLost,
+              {
+                backgroundColor: colors.surface,
+                borderColor: status === "won" ? colors.cyan : colors.red,
+                shadowColor: status === "won" ? colors.cyan : colors.red,
+              },
             ]}
             testID={status === "won" ? "modal-won" : "modal-lost"}
           >
             <Text
               style={[
                 styles.modalEyebrow,
-                { color: status === "won" ? COLORS.cyan : COLORS.red },
+                { color: status === "won" ? colors.cyan : colors.red },
               ]}
             >
               {status === "won" ? "ESCAPED" : "COLLISION"}
             </Text>
-            <Text style={styles.modalTitle}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
               {status === "won" ? "Level Clear" : "Try Again"}
             </Text>
             {status === "won" && (
@@ -471,53 +634,67 @@ export default function Game() {
                 {[1, 2, 3].map((s) => {
                   const earned =
                     s === 1 ||
-                    (s === 2 && moves <= level.arrows.length + 1) ||
+                    (s === 2 &&
+                      moves <= Math.ceil(level.arrows.length * 1.15)) ||
                     (s === 3 && moves === level.arrows.length);
                   return (
                     <Ionicons
                       key={s}
                       name={earned ? "star" : "star-outline"}
                       size={36}
-                      color={earned ? COLORS.star : COLORS.textMuted}
+                      color={earned ? colors.star : colors.textMuted}
                       style={{ marginHorizontal: 6 }}
                     />
                   );
                 })}
               </View>
             )}
-            <Text style={styles.modalSub}>
-              Moves: {moves} · Arrows: {level.arrows.length}
+            <Text style={[styles.modalSub, { color: colors.textDim }]}>
+              Moves: {moves} · Arrows: {level.arrows.length} · {level.rows}×
+              {level.cols}
             </Text>
             <View style={styles.modalActions}>
               <Pressable
                 testID="modal-restart-btn"
                 onPress={onRestart}
-                style={[styles.modalBtn, styles.modalBtnSecondary]}
+                style={[
+                  styles.modalBtn,
+                  { backgroundColor: colors.bgElev, borderColor: colors.border },
+                ]}
               >
-                <Ionicons name="refresh" size={18} color={COLORS.text} />
-                <Text style={styles.modalBtnLabel}>RETRY</Text>
+                <Ionicons name="refresh" size={18} color={colors.text} />
+                <Text style={[styles.modalBtnLabel, { color: colors.text }]}>
+                  RETRY
+                </Text>
               </Pressable>
               {status === "won" ? (
                 <Pressable
                   testID="modal-next-btn"
                   onPress={onNext}
-                  style={[styles.modalBtn, styles.modalBtnPrimary]}
+                  style={[styles.modalBtn, { backgroundColor: colors.cyan }]}
                 >
-                  <Text
-                    style={[styles.modalBtnLabel, { color: "#02141a" }]}
-                  >
+                  <Text style={[styles.modalBtnLabel, { color: "#02141a" }]}>
                     NEXT
                   </Text>
                   <Ionicons name="arrow-forward" size={18} color="#02141a" />
                 </Pressable>
               ) : (
                 <Pressable
-                  testID="modal-home-btn"
-                  onPress={onBack}
-                  style={[styles.modalBtn, styles.modalBtnSecondary]}
+                  testID="modal-skip-btn"
+                  onPress={onSkip}
+                  style={[
+                    styles.modalBtn,
+                    { backgroundColor: colors.bgElev, borderColor: colors.border },
+                  ]}
                 >
-                  <Ionicons name="home" size={16} color={COLORS.text} />
-                  <Text style={styles.modalBtnLabel}>HOME</Text>
+                  <Ionicons
+                    name="play-skip-forward"
+                    size={16}
+                    color={colors.textDim}
+                  />
+                  <Text style={[styles.modalBtnLabel, { color: colors.text }]}>
+                    SKIP
+                  </Text>
                 </Pressable>
               )}
             </View>
@@ -529,83 +706,35 @@ export default function Game() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.bg,
-    paddingHorizontal: SPACING.md,
-  },
+  container: { flex: 1, paddingHorizontal: SPACING.md },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: SPACING.md,
+    marginBottom: SPACING.sm,
   },
-  iconBtn: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   headerCenter: { alignItems: "center" },
-  headerEyebrow: {
-    color: COLORS.textMuted,
-    fontSize: 10,
-    letterSpacing: 4,
-    fontWeight: "700",
-  },
-  headerTitle: {
-    color: COLORS.text,
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: 2,
-  },
+  headerEyebrow: { fontSize: 10, letterSpacing: 4, fontWeight: "700" },
+  headerTitle: { fontSize: 22, fontWeight: "900", letterSpacing: 2 },
   statsBar: {
     flexDirection: "row",
-    backgroundColor: COLORS.surface,
     borderRadius: RADIUS.md,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: SPACING.md,
+    padding: SPACING.sm + 2,
     justifyContent: "space-around",
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.md,
   },
-  statBlock: { alignItems: "center" },
-  statLabel: {
-    color: COLORS.textMuted,
-    fontSize: 10,
-    letterSpacing: 3,
-    fontWeight: "700",
-  },
-  statValue: {
-    color: COLORS.cyan,
-    fontSize: 20,
-    fontWeight: "900",
-    marginTop: 2,
-  },
-  boardWrap: {
-    alignItems: "center",
-    justifyContent: "center",
-    flex: 1,
-  },
+  statBlock: { alignItems: "center", flex: 1 },
+  statLabel: { fontSize: 10, letterSpacing: 3, fontWeight: "700" },
+  statValue: { fontSize: 18, fontWeight: "900", marginTop: 2 },
+  boardWrap: { alignItems: "center", justifyContent: "center", flex: 1 },
   board: {
-    backgroundColor: COLORS.bgElev,
     borderRadius: RADIUS.md,
     borderWidth: 1,
-    borderColor: COLORS.border,
     overflow: "hidden",
   },
-  gridLine: {
-    position: "absolute",
-    backgroundColor: COLORS.border,
-    opacity: 0.6,
-  },
-  wall: {
-    position: "absolute",
-    backgroundColor: COLORS.surface,
-    borderWidth: 2,
-    borderColor: COLORS.textMuted,
-    borderStyle: "dashed",
-  },
+  gridLine: { position: "absolute", opacity: 0.6 },
   arrowCell: {
     position: "absolute",
     alignItems: "center",
@@ -625,14 +754,37 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 12,
-    lineHeight: undefined,
   },
-  hint: {
-    color: COLORS.textDim,
-    textAlign: "center",
-    fontSize: 13,
-    marginVertical: SPACING.md,
-    paddingHorizontal: SPACING.lg,
+  actionBar: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: SPACING.sm,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.sm,
+  },
+  actionChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: 10,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1.5,
+  },
+  actionLabel: { fontSize: 12, fontWeight: "800", letterSpacing: 1.5 },
+  actionCounter: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 2,
+  },
+  actionCounterText: {
+    color: "#000",
+    fontSize: 10,
+    fontWeight: "900",
   },
   modalBackdrop: {
     flex: 1,
@@ -644,46 +796,22 @@ const styles = StyleSheet.create({
   modal: {
     width: "100%",
     maxWidth: 360,
-    backgroundColor: COLORS.surface,
     borderRadius: RADIUS.lg,
     padding: SPACING.xl,
     alignItems: "center",
     borderWidth: 2,
-  },
-  modalWon: {
-    borderColor: COLORS.cyan,
-    shadowColor: COLORS.cyan,
     shadowOpacity: 0.5,
     shadowRadius: 30,
     shadowOffset: { width: 0, height: 0 },
   },
-  modalLost: {
-    borderColor: COLORS.red,
-    shadowColor: COLORS.red,
-    shadowOpacity: 0.4,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  modalEyebrow: {
-    fontSize: 11,
-    letterSpacing: 5,
-    fontWeight: "800",
-  },
-  modalTitle: {
-    color: COLORS.text,
-    fontSize: 32,
-    fontWeight: "900",
-    marginTop: 4,
-  },
-  modalStars: {
-    flexDirection: "row",
-    marginVertical: SPACING.md,
-  },
+  modalEyebrow: { fontSize: 11, letterSpacing: 5, fontWeight: "800" },
+  modalTitle: { fontSize: 32, fontWeight: "900", marginTop: 4 },
+  modalStars: { flexDirection: "row", marginVertical: SPACING.md },
   modalSub: {
-    color: COLORS.textDim,
-    fontSize: 13,
+    fontSize: 12,
     marginTop: SPACING.sm,
     letterSpacing: 1,
+    textAlign: "center",
   },
   modalActions: {
     flexDirection: "row",
@@ -699,19 +827,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 6,
-  },
-  modalBtnPrimary: {
-    backgroundColor: COLORS.cyan,
-  },
-  modalBtnSecondary: {
-    backgroundColor: COLORS.bgElev,
     borderWidth: 1,
-    borderColor: COLORS.border,
   },
-  modalBtnLabel: {
-    color: COLORS.text,
-    fontWeight: "800",
-    letterSpacing: 2,
-    fontSize: 13,
-  },
+  modalBtnLabel: { fontWeight: "800", letterSpacing: 2, fontSize: 13 },
 });
