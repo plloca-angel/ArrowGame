@@ -166,30 +166,39 @@ async def checkout_status(session_id: str, http_request: Request):
     webhook_url = f"{host_url}/api/webhook/stripe"
     stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
 
-    stripe_status: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(session_id)
-
     granted = bool(txn.get("granted", False))
-    new_status = stripe_status.status
-    new_payment_status = stripe_status.payment_status
+    new_status = txn.get("status", "initiated")
+    new_payment_status = txn.get("payment_status", "unpaid")
+    amount_total_cents = int(round(float(txn.get("amount", 0)) * 100))
+    currency = txn.get("currency", "usd")
 
-    # Idempotent: only grant entitlement once
-    if not granted and new_payment_status == "paid":
-        granted = True
-        # In a real app we'd update a per-user entitlements record here.
-        # For this offline-first game, the client will read the granted flag and
-        # store it locally. Server only confirms.
+    # Try to refresh from Stripe; if the call fails (test sandbox / network),
+    # fall back to the stored DB state so the frontend poll still works.
+    try:
+        stripe_status: CheckoutStatusResponse = await stripe_checkout.get_checkout_status(session_id)
+        new_status = stripe_status.status
+        new_payment_status = stripe_status.payment_status
+        amount_total_cents = stripe_status.amount_total
+        currency = stripe_status.currency
 
-    await db.payment_transactions.update_one(
-        {"session_id": session_id},
-        {
-            "$set": {
-                "status": new_status,
-                "payment_status": new_payment_status,
-                "granted": granted,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-        },
-    )
+        # Idempotent: only grant entitlement once
+        if not granted and new_payment_status == "paid":
+            granted = True
+
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "status": new_status,
+                    "payment_status": new_payment_status,
+                    "granted": granted,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+    except Exception as e:
+        # Webhook will still flip the payment_status to paid when Stripe fires it.
+        logger.warning("Stripe status fetch failed for %s: %s", session_id, e)
 
     return CheckoutStatusOut(
         session_id=session_id,
@@ -197,8 +206,8 @@ async def checkout_status(session_id: str, http_request: Request):
         payment_status=new_payment_status,
         product_id=txn["product_id"],
         granted=granted,
-        amount_total=stripe_status.amount_total,
-        currency=stripe_status.currency,
+        amount_total=amount_total_cents,
+        currency=currency,
     )
 
 
