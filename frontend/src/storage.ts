@@ -7,19 +7,19 @@ export type Progress = {
   completed: Record<number, { stars: number; bestMoves: number }>; // levelId -> stats
 };
 
-const DEFAULT_PROGRESS: Progress = {
+const DEFAULT_PROGRESS = (): Progress => ({
   highestUnlocked: 1,
   completed: {},
-};
+});
 
 export async function loadProgress(): Promise<Progress> {
   try {
     const raw = await AsyncStorage.getItem(PROGRESS_KEY);
-    if (!raw) return DEFAULT_PROGRESS;
+    if (!raw) return DEFAULT_PROGRESS();
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_PROGRESS, ...parsed };
+    return { ...DEFAULT_PROGRESS(), ...parsed };
   } catch {
-    return DEFAULT_PROGRESS;
+    return DEFAULT_PROGRESS();
   }
 }
 
@@ -47,5 +47,5 @@ export async function recordWin(
 
 export async function resetProgress(): Promise<Progress> {
   await AsyncStorage.removeItem(PROGRESS_KEY);
-  return DEFAULT_PROGRESS;
+  return DEFAULT_PROGRESS();
 }
