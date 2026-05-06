@@ -1,0 +1,32 @@
+{
+  "summary": "Frontend-only smoke + flow test of Arrow Escape (Expo web). Home, Levels, navigation, locking, restart, lose modal, reset all work. CRITICAL: Level 1 is unsolvable as designed - the two arrows point AT each other (right at (1,1) and left at (1,2)), so any tap order causes collision. Win flow, NEXT button, level 2 unlock, stats updates, and 'CONTINUE · LV N' label could NOT be verified because no level can be won.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "src/levels.ts Level 1", "issue": "Level 1 arrows face each other: {row:1,col:1,right} and {row:1,col:2,left}. Both collide regardless of order. The task spec says tapping arrow-1-1 (left) should escape, but it cannot - col 1 to its left contains the right-arrow. Suggest swapping directions (e.g. left at col1 and right at col2) or repositioning arrows so each has a clear escape path.", "testID": "arrow-1-0, arrow-1-1", "priority": "CRITICAL"}
+    ],
+    "integration_issues": [
+      {"flow": "Win/progress/CONTINUE/level-2-unlock/star-update", "issue": "Could not be tested because Level 1 is unsolvable. Lose-modal + retry + locked-tile + reset progress flows all confirmed working.", "affected_testIDs": ["modal-won","modal-next-btn","stat-completed","home-play-btn","level-tile-2"]}
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "global", "issue": "Deprecation warnings (non-blocking): 'shadow*' style props deprecated (use boxShadow), 'textShadow*' deprecated, props.pointerEvents deprecated (use style.pointerEvents)."}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_1.json"],
+  "action_items": [
+    "FIX Level 1 in /app/frontend/src/levels.ts so it is solvable. Simplest fix: swap directions -> [{row:1,col:1,direction:'left'},{row:1,col:2,direction:'right'}] (each escapes outward). Re-test full win → next → level 2 unlock → home stats/CONTINUE flow afterwards.",
+    "Optional: address React Native Web deprecation warnings (boxShadow, textShadow, pointerEvents)."
+  ],
+  "critical_code_review_comments": [
+    "checkWin uses moves+1 captured at firing time but state setMoves is async; the recordWin uses moves+1 inline so it is correct, but reading 'moves' inside checkWin closure could be stale if multiple arrows fire in sequence - acceptable since animating gate prevents overlap.",
+    "Procedural level generator does not guarantee solvability - acceptable for endless mode but should be flagged to user."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A", "frontend": "~70% (win path blocked by unsolvable Level 1)"},
+  "seed_data_creation": "None",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent fixes Level 1, retest: tap arrow-1-1 then arrow-1-0 -> modal-won visible -> NEXT -> game-level-id='02' -> back to /levels -> level-tile-2 unlocked -> home stat-completed=1, play btn shows 'CONTINUE · LV 2'. Reset via levels-reset-btn returns to initial state.",
+  "rca_of_issue": "Level definition LEVELS[0] in /app/frontend/src/levels.ts has both arrows pointing inward at adjacent cells (right at col1 and left at col2). The collision rule in computeFlight detects another arrow in the path's first step, so neither arrow can be released first without colliding. Repro: load game?level=1, tap either arrow -> modal-lost. Mitigation: invert directions so arrows escape outward, or place a free cell between them."
+}
