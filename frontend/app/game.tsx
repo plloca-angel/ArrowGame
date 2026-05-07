@@ -22,7 +22,6 @@ import {
   Entitlements,
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
-import { AdBanner } from "../src/AdBanner";
 import { InterstitialAd } from "../src/InterstitialAd";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
@@ -665,10 +664,8 @@ export default function Game() {
         </Text>
       )}
 
-      {/* Banner ad at bottom */}
-      <View style={{ marginBottom: insets.bottom + SPACING.sm }}>
-        <AdBanner />
-      </View>
+      {/* Banner ad removed — only interstitial on Skip / every 2 levels remains */}
+      <View style={{ height: insets.bottom + SPACING.sm }} />
 
       {/* Win/Lose Modal */}
       <Modal
