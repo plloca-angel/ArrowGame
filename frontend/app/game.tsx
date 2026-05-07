@@ -414,14 +414,39 @@ export default function Game() {
             {levelId.toString().padStart(2, "0")}
           </Text>
         </View>
-        <Pressable
-          testID="game-restart-btn"
-          onPress={onRestart}
-          style={styles.iconBtn}
-          hitSlop={12}
-        >
-          <Ionicons name="refresh" size={22} color={colors.text} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          {!ents?.removeAds && (
+            <Pressable
+              testID="game-remove-ads-btn"
+              onPress={() => {
+                haptic("selection");
+                router.push("/store");
+              }}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.removeAdsChip,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.cyan,
+                  opacity: pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              <Ionicons name="shield-checkmark" size={14} color={colors.cyan} />
+              <Text style={[styles.removeAdsLabel, { color: colors.cyan }]}>
+                REMOVE ADS
+              </Text>
+            </Pressable>
+          )}
+          <Pressable
+            testID="game-restart-btn"
+            onPress={onRestart}
+            style={styles.iconBtn}
+            hitSlop={12}
+          >
+            <Ionicons name="refresh" size={22} color={colors.text} />
+          </Pressable>
+        </View>
       </View>
 
       {/* Stats */}
@@ -615,8 +640,30 @@ export default function Game() {
           <Text style={[styles.actionLabel, { color: colors.text }]}>
             SKIP
           </Text>
+          {!ents?.removeAds && (
+            <View
+              style={[
+                styles.skipAdTag,
+                { backgroundColor: colors.bgElev, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons name="play" size={9} color={colors.textMuted} />
+              <Text style={[styles.skipAdTagText, { color: colors.textMuted }]}>
+                AD
+              </Text>
+            </View>
+          )}
         </Pressable>
       </View>
+
+      {!ents?.removeAds && (
+        <Text
+          testID="skip-ad-disclaimer"
+          style={[styles.skipDisclaimer, { color: colors.textMuted }]}
+        >
+          Skipping plays a short ad. Tap REMOVE ADS to skip without ads.
+        </Text>
+      )}
 
       {/* Banner ad at bottom */}
       <View style={{ marginBottom: insets.bottom + SPACING.sm }}>
@@ -744,6 +791,44 @@ const styles = StyleSheet.create({
   },
   iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   headerCenter: { alignItems: "center" },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 6 },
+  removeAdsChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1.5,
+  },
+  removeAdsLabel: {
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 1.5,
+  },
+  skipAdTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    marginLeft: 2,
+  },
+  skipAdTagText: {
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  skipDisclaimer: {
+    textAlign: "center",
+    fontSize: 11,
+    marginTop: -SPACING.xs,
+    marginBottom: SPACING.sm,
+    paddingHorizontal: SPACING.md,
+    fontStyle: "italic",
+  },
   headerEyebrow: { fontSize: 10, letterSpacing: 4, fontWeight: "700" },
   headerTitle: { fontSize: 22, fontWeight: "900", letterSpacing: 2 },
   statsBar: {
