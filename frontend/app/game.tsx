@@ -23,6 +23,7 @@ import {
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
 import { AdBanner } from "../src/AdBanner";
+import { InterstitialAd } from "../src/InterstitialAd";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -40,11 +41,11 @@ type ArrowState = {
 
 type GameStatus = "playing" | "won" | "lost";
 
-const ARROW_GLYPH: Record<Direction, string> = {
-  up: "▲",
-  down: "▼",
-  left: "◀",
-  right: "▶",
+const ARROW_ICON: Record<Direction, "caret-up" | "caret-down" | "caret-back" | "caret-forward"> = {
+  up: "caret-up",
+  down: "caret-down",
+  left: "caret-back",
+  right: "caret-forward",
 };
 
 export default function Game() {
@@ -73,6 +74,10 @@ export default function Game() {
   const [resetSignal, setResetSignal] = useState(0);
   const [ents, setEnts] = useState<Entitlements | null>(null);
   const [hintHighlight, setHintHighlight] = useState<string | null>(null);
+  const [interstitial, setInterstitial] = useState<{
+    visible: boolean;
+    nextLevel: number;
+  }>({ visible: false, nextLevel: levelId + 1 });
 
   useEffect(() => {
     loadEntitlements().then(setEnts);
@@ -250,21 +255,41 @@ export default function Game() {
     setResetSignal((s) => s + 1);
   };
 
+  const advanceTo = (target: number) => {
+    router.replace({ pathname: "/game", params: { level: String(target) } });
+  };
+
+  const goNext = (target: number) => {
+    // Show interstitial every 2 levels, unless removeAds is owned.
+    // We trigger when we are LEAVING an even level (i.e. completed lv 2, 4, 6 …)
+    const shouldShowAd = !ents?.removeAds && levelId % 2 === 0;
+    if (shouldShowAd) {
+      setInterstitial({ visible: true, nextLevel: target });
+    } else {
+      advanceTo(target);
+    }
+  };
+
   const onNext = () => {
     haptic("medium");
-    router.replace({
-      pathname: "/game",
-      params: { level: String(levelId + 1) },
-    });
+    goNext(levelId + 1);
   };
 
   const onSkip = async () => {
     haptic("warning");
     await skipLevel(levelId);
-    router.replace({
-      pathname: "/game",
-      params: { level: String(levelId + 1) },
-    });
+    // Skip ALWAYS shows an ad (unless removeAds is owned)
+    if (!ents?.removeAds) {
+      setInterstitial({ visible: true, nextLevel: levelId + 1 });
+    } else {
+      advanceTo(levelId + 1);
+    }
+  };
+
+  const closeInterstitial = () => {
+    const target = interstitial.nextLevel;
+    setInterstitial({ visible: false, nextLevel: target });
+    advanceTo(target);
   };
 
   const onHint = async () => {
@@ -511,26 +536,25 @@ export default function Game() {
                     pressed && a.status === "idle" && { transform: [{ scale: 0.92 }] },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.arrowGlyph,
-                      {
-                        fontSize: arrowSize,
-                        color:
-                          a.status === "broken"
-                            ? colors.red
-                            : a.status === "escaped"
-                            ? colors.green
-                            : isHinted
-                            ? colors.yellow
-                            : colors.cyan,
-                        textShadowColor:
-                          a.status === "broken" ? colors.redGlow : colors.cyanGlow,
-                      },
-                    ]}
-                  >
-                    {ARROW_GLYPH[a.direction]}
-                  </Text>
+                  <Ionicons
+                    name={ARROW_ICON[a.direction]}
+                    size={arrowSize}
+                    color={
+                      a.status === "broken"
+                        ? colors.red
+                        : a.status === "escaped"
+                        ? colors.green
+                        : isHinted
+                        ? colors.yellow
+                        : colors.cyan
+                    }
+                    style={{
+                      textShadowColor:
+                        a.status === "broken" ? colors.redGlow : colors.cyanGlow,
+                      textShadowOffset: { width: 0, height: 0 },
+                      textShadowRadius: 12,
+                    }}
+                  />
                 </Pressable>
               </Animated.View>
             );
@@ -701,6 +725,11 @@ export default function Game() {
           </View>
         </View>
       </Modal>
+      {/* Interstitial ad (Skip + every-2-levels gating) */}
+      <InterstitialAd
+        visible={interstitial.visible}
+        onClose={closeInterstitial}
+      />
     </View>
   );
 }
