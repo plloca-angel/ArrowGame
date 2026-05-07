@@ -318,11 +318,6 @@ export default function Home() {
             </Text>
           </Pressable>
         </View>
-
-        {/* Banner ad */}
-        <View style={{ marginTop: SPACING.lg }}>
-          <AdBanner />
-        </View>
       </ScrollView>
     </View>
   );
