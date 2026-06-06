@@ -23,6 +23,7 @@ import {
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
 import { useAds } from "../src/services/ads";
+import NeonArrow from "../src/NeonArrow";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -548,8 +549,8 @@ export default function Game() {
                     pressed && a.status === "idle" && { transform: [{ scale: 0.92 }] },
                   ]}
                 >
-                  <Ionicons
-                    name={ARROW_ICON[a.direction]}
+                  <NeonArrow
+                    direction={a.direction}
                     size={arrowSize}
                     color={
                       a.status === "broken"
@@ -560,12 +561,14 @@ export default function Game() {
                         ? colors.yellow
                         : colors.cyan
                     }
-                    style={{
-                      textShadowColor:
-                        a.status === "broken" ? colors.redGlow : colors.cyanGlow,
-                      textShadowOffset: { width: 0, height: 0 },
-                      textShadowRadius: 12,
-                    }}
+                    glowColor={
+                      a.status === "broken"
+                        ? colors.redGlow
+                        : isHinted
+                        ? "rgba(248,255,92,0.4)"
+                        : colors.cyanGlow
+                    }
+                    strokeWidth={settings.largeArrows ? 10 : 8}
                   />
                 </Pressable>
               </Animated.View>
