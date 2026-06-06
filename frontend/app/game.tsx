@@ -74,7 +74,33 @@ export default function Game() {
   const [resetSignal, setResetSignal] = useState(0);
   const [ents, setEnts] = useState<Entitlements | null>(null);
   const [hintHighlight, setHintHighlight] = useState<string | null>(null);
+  // Persisted trails of arrows that have already escaped this level. Each
+  // trail is the straight-line flight path (start cell -> exit cell) drawn
+  // as a thick neon stroke matching the reference screenshots.
+  const [trails, setTrails] = useState<
+    Array<{
+      id: string;
+      startRow: number;
+      startCol: number;
+      endRow: number;
+      endCol: number;
+      color: string;
+    }>
+  >([]);
   const ads = useAds();
+
+  // Palette cycled through for each successful escape — gives the board the
+  // multi-colored zigzag-trail look from the reference image.
+  const TRAIL_PALETTE = [
+    "#ff3a5e", // red
+    "#39ff88", // green
+    "#ffd84a", // yellow
+    "#3aa6ff", // blue
+    "#ff9a3a", // orange
+    "#ffffff", // white
+    "#ff2bd6", // magenta
+    "#00f0ff", // cyan
+  ];
 
   useEffect(() => {
     loadEntitlements().then(setEnts);
@@ -98,6 +124,7 @@ export default function Game() {
     setStatus("playing");
     setMoves(0);
     setAnimating(false);
+    setTrails([]);
     setHintHighlight(null);
   }, [level, cellSize, resetSignal]);
 
@@ -167,6 +194,34 @@ export default function Game() {
     }).start(() => {
       if (flight.result === "escape") {
         haptic("success");
+        // Record the escaped arrow's flight path as a persistent neon trail.
+        // The colour cycles deterministically through the palette so each
+        // escape gets its own hue, matching the multi-coloured zigzag look
+        // in the reference screenshots.
+        const escapedSoFar = arrowsRef.current.filter(
+          (a) => a.status === "escaped"
+        ).length;
+        const trailColor = TRAIL_PALETTE[escapedSoFar % TRAIL_PALETTE.length];
+        // Extend the trail past the cell center towards the exit edge so the
+        // line is always visible, even for arrows next to the edge they exit.
+        const [dr, dc] = DIR_VEC[arrow.direction];
+        const stepsTraveled = Math.max(
+          Math.abs(flight.row - arrow.row),
+          Math.abs(flight.col - arrow.col)
+        );
+        const endRow = arrow.row + dr * stepsTraveled;
+        const endCol = arrow.col + dc * stepsTraveled;
+        setTrails((t) => [
+          ...t,
+          {
+            id: arrow.id + "-trail",
+            startRow: arrow.row,
+            startCol: arrow.col,
+            endRow,
+            endCol,
+            color: trailColor,
+          },
+        ]);
         Animated.timing(arrow.fade, {
           toValue: 0,
           duration: 180,
@@ -494,6 +549,56 @@ export default function Game() {
           testID="game-board"
         >
           {gridLines}
+          {/* Neon trails left behind by escaped arrows */}
+          {trails.map((tr) => {
+            const isHorizontal = tr.startRow === tr.endRow;
+            const thickness = Math.max(8, Math.floor(cellSize * 0.22));
+            const halo = thickness + 8;
+            const startX = tr.startCol * cellSize + cellSize / 2;
+            const startY = tr.startRow * cellSize + cellSize / 2;
+            const endX = tr.endCol * cellSize + cellSize / 2;
+            const endY = tr.endRow * cellSize + cellSize / 2;
+            const minX = Math.max(0, Math.min(startX, endX));
+            const maxX = Math.min(boardW, Math.max(startX, endX));
+            const minY = Math.max(0, Math.min(startY, endY));
+            const maxY = Math.min(boardH, Math.max(startY, endY));
+            const wMain = isHorizontal ? Math.max(thickness, maxX - minX) : thickness;
+            const hMain = isHorizontal ? thickness : Math.max(thickness, maxY - minY);
+            const wHalo = isHorizontal ? Math.max(halo, maxX - minX) : halo;
+            const hHalo = isHorizontal ? halo : Math.max(halo, maxY - minY);
+            const left = isHorizontal ? minX : startX - thickness / 2;
+            const top = isHorizontal ? startY - thickness / 2 : minY;
+            const haloLeft = isHorizontal ? minX : startX - halo / 2;
+            const haloTop = isHorizontal ? startY - halo / 2 : minY;
+            return (
+              <View key={tr.id} pointerEvents="none">
+                <View
+                  style={{
+                    position: "absolute",
+                    left: haloLeft,
+                    top: haloTop,
+                    width: wHalo,
+                    height: hHalo,
+                    backgroundColor: tr.color,
+                    opacity: 0.2,
+                    borderRadius: halo / 2,
+                  }}
+                />
+                <View
+                  style={{
+                    position: "absolute",
+                    left,
+                    top,
+                    width: wMain,
+                    height: hMain,
+                    backgroundColor: tr.color,
+                    opacity: 0.9,
+                    borderRadius: thickness / 2,
+                  }}
+                />
+              </View>
+            );
+          })}
           {arrows.map((a) => {
             const rotation = a.rotateShake.interpolate({
               inputRange: [-1, 0, 1],
@@ -929,3 +1034,4 @@ const styles = StyleSheet.create({
   },
   modalBtnLabel: { fontWeight: "800", letterSpacing: 2, fontSize: 13 },
 });
+
