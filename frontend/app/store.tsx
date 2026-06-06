@@ -16,30 +16,20 @@ import { useSettings } from "../src/SettingsContext";
 import {
   loadEntitlements,
   Entitlements,
-  grantPurchase,
-  getDeviceId,
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
+import {
+  listProducts,
+  purchase as iapPurchase,
+  pollStatus as iapPollStatus,
+  restorePurchases,
+  IAP_BACKEND,
+  IapProduct,
+} from "../src/services/iap";
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL!;
 
-type Product = {
-  id: string;
-  name: string;
-  amount: number;
-  currency: string;
-  kind: string;
-};
-
-type CheckoutStatus = {
-  session_id: string;
-  status: string;
-  payment_status: string;
-  product_id: string;
-  granted: boolean;
-  amount_total: number;
-  currency: string;
-};
+type Product = IapProduct;
 
 export default function StoreScreen() {
   const router = useRouter();
@@ -63,8 +53,7 @@ export default function StoreScreen() {
   }, []);
 
   useEffect(() => {
-    fetch(`${BACKEND}/api/products`)
-      .then((r) => r.json())
+    listProducts()
       .then(setProducts)
       .catch(() => {
         setStatusMsg({ text: "Couldn't load products. Check connection.", kind: "error" });
@@ -102,70 +91,60 @@ export default function StoreScreen() {
     }
     pollAttempts.current += 1;
     setStatusMsg({ text: "Confirming payment…", kind: "pending" });
-    try {
-      const res = await fetch(
-        `${BACKEND}/api/checkout/status/${sessionId}`
-      );
-      if (!res.ok) throw new Error("status fetch failed");
-      const data: CheckoutStatus = await res.json();
-      if (data.payment_status === "paid") {
-        await grantPurchase(sessionId, data.product_id);
-        await refreshEnts();
-        haptic("success");
-        setStatusMsg({
-          text:
-            data.product_id === "remove_ads"
-              ? "Ads removed. Enjoy!"
-              : "Hints added to your account!",
-          kind: "success",
-        });
-        return;
-      }
-      if (data.status === "expired") {
-        setStatusMsg({ text: "Payment expired.", kind: "error" });
-        return;
-      }
-      setTimeout(() => pollStatus(sessionId), 2000);
-    } catch (e) {
-      setStatusMsg({ text: "Error checking status. Try again.", kind: "error" });
+    const result = await iapPollStatus(sessionId);
+    if (result.paid) {
+      await refreshEnts();
+      haptic("success");
+      setStatusMsg({
+        text:
+          result.productId === "remove_ads"
+            ? "Ads removed. Enjoy!"
+            : "Hints added to your account!",
+        kind: "success",
+      });
+      return;
     }
+    setTimeout(() => pollStatus(sessionId), 2000);
   }
 
   async function buy(product: Product) {
     haptic("medium");
     setLoadingProductId(product.id);
     setStatusMsg(null);
-    try {
-      const deviceId = await getDeviceId();
-      const origin =
-        Platform.OS === "web" && typeof window !== "undefined"
-          ? window.location.origin
-          : BACKEND;
-      const res = await fetch(`${BACKEND}/api/checkout/session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          product_id: product.id,
-          origin_url: origin,
-          user_id: deviceId,
-        }),
-      });
-      if (!res.ok) throw new Error("checkout create failed");
-      const { url } = await res.json();
-      if (Platform.OS === "web") {
-        // Direct browser redirect for web preview so deep links work cleanly
-        window.location.href = url;
-      } else {
-        await WebBrowser.openBrowserAsync(url);
-        // After returning, re-check entitlements (user may have completed)
-        refreshEnts();
+    const result = await iapPurchase(product);
+    setLoadingProductId(null);
+    if (!result.success) {
+      if (result.error !== "Cancelled") {
+        haptic("error");
+        setStatusMsg({ text: result.error ?? "Couldn't start checkout.", kind: "error" });
       }
-    } catch (e) {
-      haptic("error");
-      setStatusMsg({ text: "Couldn't start checkout.", kind: "error" });
-    } finally {
-      setLoadingProductId(null);
+      return;
     }
+    if (IAP_BACKEND === "native") {
+      // Native IAP grants synchronously
+      await refreshEnts();
+      haptic("success");
+      setStatusMsg({
+        text:
+          product.id === "remove_ads"
+            ? "Ads removed. Enjoy!"
+            : "Hints added to your account!",
+        kind: "success",
+      });
+    } else if (result.sessionId) {
+      // Stripe web: opened in a new tab; user returns and we poll
+      setStatusMsg({
+        text: "Complete checkout in the opened tab. We'll update when done.",
+        kind: "pending",
+      });
+    }
+  }
+
+  async function onRestore() {
+    haptic("selection");
+    await restorePurchases();
+    await refreshEnts();
+    setStatusMsg({ text: "Restored.", kind: "success" });
   }
 
   return (

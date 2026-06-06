@@ -22,7 +22,7 @@ import {
   Entitlements,
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
-import { InterstitialAd } from "../src/InterstitialAd";
+import { useAds } from "../src/services/ads";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -73,10 +73,7 @@ export default function Game() {
   const [resetSignal, setResetSignal] = useState(0);
   const [ents, setEnts] = useState<Entitlements | null>(null);
   const [hintHighlight, setHintHighlight] = useState<string | null>(null);
-  const [interstitial, setInterstitial] = useState<{
-    visible: boolean;
-    nextLevel: number;
-  }>({ visible: false, nextLevel: levelId + 1 });
+  const ads = useAds();
 
   useEffect(() => {
     loadEntitlements().then(setEnts);
@@ -258,15 +255,13 @@ export default function Game() {
     router.replace({ pathname: "/game", params: { level: String(target) } });
   };
 
-  const goNext = (target: number) => {
+  const goNext = async (target: number) => {
     // Show interstitial every 2 levels, unless removeAds is owned.
-    // We trigger when we are LEAVING an even level (i.e. completed lv 2, 4, 6 …)
     const shouldShowAd = !ents?.removeAds && levelId % 2 === 0;
     if (shouldShowAd) {
-      setInterstitial({ visible: true, nextLevel: target });
-    } else {
-      advanceTo(target);
+      await ads.showInterstitial();
     }
+    advanceTo(target);
   };
 
   const onNext = () => {
@@ -277,18 +272,11 @@ export default function Game() {
   const onSkip = async () => {
     haptic("warning");
     await skipLevel(levelId);
-    // Skip ALWAYS shows an ad (unless removeAds is owned)
+    // Skip always shows an ad (unless removeAds is owned)
     if (!ents?.removeAds) {
-      setInterstitial({ visible: true, nextLevel: levelId + 1 });
-    } else {
-      advanceTo(levelId + 1);
+      await ads.showInterstitial();
     }
-  };
-
-  const closeInterstitial = () => {
-    const target = interstitial.nextLevel;
-    setInterstitial({ visible: false, nextLevel: target });
-    advanceTo(target);
+    advanceTo(levelId + 1);
   };
 
   const onHint = async () => {
@@ -769,11 +757,7 @@ export default function Game() {
           </View>
         </View>
       </Modal>
-      {/* Interstitial ad (Skip + every-2-levels gating) */}
-      <InterstitialAd
-        visible={interstitial.visible}
-        onClose={closeInterstitial}
-      />
+      {/* Interstitial ads are rendered globally by AdsProvider in _layout */}
     </View>
   );
 }
