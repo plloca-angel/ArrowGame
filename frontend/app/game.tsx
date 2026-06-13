@@ -9,11 +9,11 @@ import {
   Dimensions,
   Modal,
 } from "react-native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "../src/SettingsContext";
-import { Direction, DIR_VEC, getLevel, Level } from "../src/levels";
+import { Direction, getLevel, Level, GridCell, getLevelActiveCellSet, cellKey } from "../src/levels";
 import {
   recordWin,
   loadEntitlements,
@@ -23,16 +23,25 @@ import {
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
 import { AdBanner } from "../src/AdBanner";
+import { presentInterstitialAd } from "../src/ads/interstitial";
+import { NeonPathArrow, getNeonTrace, pathHitBox } from "../src/components/NeonPathArrow";
+import {
+  buildMovementTrack,
+  buildSnakeStepSequence,
+  extractSnakePolyline,
+  simulateSnakeFlight,
+  SnakeFlightResult,
+} from "../src/arrowMotion";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
 type ArrowState = {
   id: string;
-  row: number;
-  col: number;
+  cells: GridCell[];
+  visualCells: GridCell[];
   direction: Direction;
   status: ArrowStatus;
-  anim: Animated.ValueXY;
+  colorIndex: number;
   fade: Animated.Value;
   rotateShake: Animated.Value;
   hintPulse: Animated.Value;
@@ -40,11 +49,13 @@ type ArrowState = {
 
 type GameStatus = "playing" | "won" | "lost";
 
-const ARROW_GLYPH: Record<Direction, string> = {
-  up: "▲",
-  down: "▼",
-  left: "◀",
-  right: "▶",
+const STEP_MS = 88;
+const ESCAPE_EXTRA_CELLS = 2;
+
+const ARROW_GLOW = {
+  hint: { color: "#f8ff5c", glow: "rgba(248, 255, 92, 0.55)" },
+  broken: { color: "#ff3a5e", glow: "rgba(255, 58, 94, 0.55)" },
+  escaped: { color: "#39ff88", glow: "rgba(57, 255, 136, 0.45)" },
 };
 
 export default function Game() {
@@ -55,21 +66,33 @@ export default function Game() {
 
   const levelId = Math.max(1, parseInt(levelParam || "1", 10) || 1);
   const level: Level = useMemo(() => getLevel(levelId), [levelId]);
+  const activeCellSet = useMemo(() => getLevelActiveCellSet(level), [level]);
 
-  // Container measurement
-  const [containerW, setContainerW] = useState(
-    Math.min(Dimensions.get("window").width - SPACING.md * 2, 420)
-  );
-  const maxBoardWidth = Math.min(containerW, 480);
-  const cellSize = Math.max(28, Math.floor(maxBoardWidth / level.cols));
+  // Board area: size cells from both width and height so the grid stays centered as levels grow
+  const [boardSpace, setBoardSpace] = useState({ w: 0, h: 0 });
+  const win = Dimensions.get("window");
+  const layoutW =
+    boardSpace.w > 0
+      ? boardSpace.w
+      : Math.min(win.width - SPACING.md * 2, win.width - 32);
+  const layoutH =
+    boardSpace.h > 0 ? boardSpace.h : Math.max(160, win.height * 0.36);
+  const cellFromW = Math.floor(layoutW / (level.cols + (level.isSpecialShape ? 2 : 3)));
+  const cellFromH = Math.floor(layoutH / (level.rows + (level.isSpecialShape ? 2 : 3)));
+  const minCell = level.isSpecialShape ? 14 : 24;
+  const cellSize = Math.max(minCell, Math.min(cellFromW, cellFromH));
   const boardW = cellSize * level.cols;
   const boardH = cellSize * level.rows;
+  const boardPad = Math.ceil(cellSize * (level.isSpecialShape ? 1.6 : 2));
+  const canvasW = boardW + boardPad * 2;
+  const canvasH = boardH + boardPad * 2;
 
   const [arrows, setArrows] = useState<ArrowState[]>([]);
   const arrowsRef = useRef<ArrowState[]>([]);
   const [status, setStatus] = useState<GameStatus>("playing");
+  const statusRef = useRef<GameStatus>("playing");
   const [moves, setMoves] = useState(0);
-  const [animating, setAnimating] = useState(false);
+  const movesRef = useRef(0);
   const [resetSignal, setResetSignal] = useState(0);
   const [ents, setEnts] = useState<Entitlements | null>(null);
   const [hintHighlight, setHintHighlight] = useState<string | null>(null);
@@ -78,15 +101,25 @@ export default function Game() {
     loadEntitlements().then(setEnts);
   }, [resetSignal, status]);
 
+  useFocusEffect(
+    useCallback(() => {
+      loadEntitlements().then(setEnts);
+    }, [])
+  );
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
   // Initialize arrows from level
   useEffect(() => {
     const init: ArrowState[] = level.arrows.map((a, idx) => ({
       id: `${level.id}-${idx}`,
-      row: a.row,
-      col: a.col,
+      cells: a.cells.map((c) => ({ ...c })),
+      visualCells: a.cells.map((c) => ({ ...c })),
       direction: a.direction,
+      colorIndex: idx,
       status: "idle",
-      anim: new Animated.ValueXY({ x: a.col * cellSize, y: a.row * cellSize }),
       fade: new Animated.Value(1),
       rotateShake: new Animated.Value(0),
       hintPulse: new Animated.Value(0),
@@ -94,146 +127,157 @@ export default function Game() {
     setArrows(init);
     arrowsRef.current = init;
     setStatus("playing");
+    statusRef.current = "playing";
     setMoves(0);
-    setAnimating(false);
+    movesRef.current = 0;
     setHintHighlight(null);
   }, [level, cellSize, resetSignal]);
 
-  const occupiedAt = useCallback(
-    (r: number, c: number, list: ArrowState[]) => {
-      const hit = list.find(
-        (a) =>
-          a.status !== "escaped" &&
-          a.status !== "broken" &&
-          a.row === r &&
-          a.col === c
-      );
-      return hit ? "arrow" : null;
+  const isCellOccupied = useCallback(
+    (r: number, c: number, list: ArrowState[], excludeId?: string) => {
+      for (const a of list) {
+        if (a.id === excludeId || a.status === "escaped") continue;
+        for (const cell of a.cells) {
+          if (cell.row === r && cell.col === c) return true;
+        }
+      }
+      return false;
     },
     []
   );
 
   const computeFlight = useCallback(
-    (arrow: ArrowState, list: ArrowState[]) => {
-      const [dr, dc] = DIR_VEC[arrow.direction];
-      let r = arrow.row + dr;
-      let c = arrow.col + dc;
-      while (r >= 0 && r < level.rows && c >= 0 && c < level.cols) {
-        const occ = occupiedAt(r, c, list);
-        if (occ) {
-          return { result: "collision" as const, row: r, col: c, occ };
-        }
-        r += dr;
-        c += dc;
-      }
-      return { result: "escape" as const, row: r, col: c };
+    (arrow: ArrowState, list: ArrowState[]): SnakeFlightResult => {
+      const escapeExtra = Math.max(
+        ESCAPE_EXTRA_CELLS,
+        Math.ceil(arrow.cells.length * 0.75)
+      );
+      const onBoard = (r: number, c: number) => activeCellSet.has(cellKey(r, c));
+      return simulateSnakeFlight(
+        arrow.cells,
+        arrow.direction,
+        onBoard,
+        (r, c) => isCellOccupied(r, c, list, arrow.id),
+        escapeExtra,
+        level.rows + level.cols
+      );
     },
-    [level, occupiedAt]
+    [level, isCellOccupied, activeCellSet]
   );
 
-  const fireArrow = (arrow: ArrowState) => {
-    if (animating || status !== "playing") return;
-    if (arrow.status !== "idle") return;
-    setHintHighlight(null);
+  const animateSnakeAlongPath = async (
+    arrowId: string,
+    startCells: GridCell[],
+    direction: Direction,
+    totalSteps: number,
+    reducedMotion: boolean
+  ) => {
+    const track = buildMovementTrack(startCells, direction, totalSteps);
+    const sequence = buildSnakeStepSequence(startCells, direction, totalSteps);
+    const segmentCount = startCells.length;
+    const stepDuration = reducedMotion ? 36 : STEP_MS;
+    const progress = new Animated.Value(0);
 
-    const flight = computeFlight(arrow, arrowsRef.current);
-    setAnimating(true);
-    setMoves((m) => m + 1);
+    const discreteCellsAt = (value: number) => {
+      if (value < 1) return startCells.map((c) => ({ ...c }));
+      const idx = Math.min(Math.floor(value) - 1, sequence.length - 1);
+      return sequence[idx].map((c) => ({ ...c }));
+    };
 
-    const newList = arrowsRef.current.map((a) =>
-      a.id === arrow.id ? { ...a, status: "flying" as ArrowStatus } : a
-    );
-    arrowsRef.current = newList;
-    setArrows(newList);
+    await new Promise<void>((resolve) => {
+      const listenerId = progress.addListener(({ value }) => {
+        const visual = extractSnakePolyline(track, value, segmentCount);
+        const cells = discreteCellsAt(value);
+        const updated = arrowsRef.current.map((a) =>
+          a.id === arrowId ? { ...a, visualCells: visual, cells } : a
+        );
+        arrowsRef.current = updated;
+        setArrows(updated);
+      });
 
-    const targetX = flight.col * cellSize;
-    const targetY = flight.row * cellSize;
-    const dist = Math.max(
-      Math.abs(flight.row - arrow.row),
-      Math.abs(flight.col - arrow.col)
-    );
-    const baseDuration = settings.reducedMotion ? 80 : 80;
-    const duration = Math.max(140, dist * baseDuration);
-
-    haptic("light");
-
-    Animated.timing(arrow.anim, {
-      toValue: { x: targetX, y: targetY },
-      duration,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start(() => {
-      if (flight.result === "escape") {
-        haptic("success");
-        Animated.timing(arrow.fade, {
-          toValue: 0,
-          duration: 180,
-          useNativeDriver: false,
-        }).start(() => {
-          const updated = arrowsRef.current.map((a) =>
-            a.id === arrow.id ? { ...a, status: "escaped" as ArrowStatus } : a
-          );
-          arrowsRef.current = updated;
-          setArrows(updated);
-          setAnimating(false);
-          checkWin(updated);
-        });
-      } else {
-        haptic("error");
-        if (!settings.reducedMotion) {
-          Animated.sequence([
-            Animated.timing(arrow.rotateShake, {
-              toValue: 1,
-              duration: 60,
-              useNativeDriver: false,
-            }),
-            Animated.timing(arrow.rotateShake, {
-              toValue: -1,
-              duration: 60,
-              useNativeDriver: false,
-            }),
-            Animated.timing(arrow.rotateShake, {
-              toValue: 0,
-              duration: 60,
-              useNativeDriver: false,
-            }),
-          ]).start();
-        }
-        let updated = arrowsRef.current.map((a) =>
-          a.id === arrow.id
+      Animated.timing(progress, {
+        toValue: totalSteps,
+        duration: stepDuration * totalSteps,
+        easing: Easing.linear,
+        useNativeDriver: false,
+      }).start(() => {
+        progress.removeListener(listenerId);
+        const finalCells = sequence[sequence.length - 1] ?? startCells;
+        const snapped = arrowsRef.current.map((a) =>
+          a.id === arrowId
             ? {
                 ...a,
-                status: "broken" as ArrowStatus,
-                row: flight.row,
-                col: flight.col,
+                cells: finalCells.map((c) => ({ ...c })),
+                visualCells: finalCells.map((c) => ({ ...c })),
               }
             : a
         );
-        if (flight.occ === "arrow") {
-          updated = updated.map((a) =>
-            a.row === flight.row &&
-            a.col === flight.col &&
-            a.id !== arrow.id &&
-            a.status !== "escaped" &&
-            a.status !== "broken"
-              ? { ...a, status: "broken" as ArrowStatus }
-              : a
-          );
-        }
-        arrowsRef.current = updated;
-        setArrows(updated);
-        updated
-          .filter((a) => a.status === "broken")
-          .forEach((a) =>
-            Animated.timing(a.fade, {
-              toValue: 0.25,
-              duration: 220,
-              useNativeDriver: false,
-            }).start()
-          );
-        setAnimating(false);
-        setStatus("lost");
+        arrowsRef.current = snapped;
+        setArrows(snapped);
+        resolve();
+      });
+    });
+  };
+
+  const fireArrowById = useCallback(
+    (arrowId: string) => {
+      const arrow = arrowsRef.current.find((a) => a.id === arrowId);
+      if (arrow) fireArrow(arrow);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [status]
+  );
+
+  const cellTapTargets = useMemo(() => {
+    const targets: { row: number; col: number; arrowId: string }[] = [];
+    const seen = new Set<string>();
+    for (const a of arrows) {
+      if (a.status !== "idle") continue;
+      for (const cell of a.cells) {
+        const key = `${cell.row},${cell.col}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        targets.push({ row: cell.row, col: cell.col, arrowId: a.id });
       }
+    }
+    return targets;
+  }, [arrows]);
+
+  const shakeAnim = (rotateShake: Animated.Value, reducedMotion: boolean) =>
+    new Promise<void>((resolve) => {
+      if (reducedMotion) {
+        resolve();
+        return;
+      }
+      Animated.sequence([
+        Animated.timing(rotateShake, {
+          toValue: 1,
+          duration: 45,
+          useNativeDriver: true,
+        }),
+        Animated.timing(rotateShake, {
+          toValue: -1,
+          duration: 45,
+          useNativeDriver: true,
+        }),
+        Animated.timing(rotateShake, {
+          toValue: 0.6,
+          duration: 40,
+          useNativeDriver: true,
+        }),
+        Animated.timing(rotateShake, {
+          toValue: 0,
+          duration: 40,
+          useNativeDriver: true,
+        }),
+      ]).start(() => resolve());
+    });
+
+  const bumpMoves = () => {
+    setMoves((m) => {
+      const next = m + 1;
+      movesRef.current = next;
+      return next;
     });
   };
 
@@ -241,8 +285,114 @@ export default function Game() {
     const allOut = list.every((a) => a.status === "escaped");
     if (allOut) {
       setStatus("won");
-      recordWin(levelId, moves + 1, list.length).catch(() => {});
+      statusRef.current = "won";
+      recordWin(levelId, movesRef.current, list.length).catch(() => {});
     }
+  };
+
+  const fireArrow = async (arrow: ArrowState) => {
+    if (statusRef.current !== "playing") return;
+    const live = arrowsRef.current.find((a) => a.id === arrow.id);
+    if (!live || live.status !== "idle") return;
+    setHintHighlight(null);
+
+    const flight = computeFlight(live, arrowsRef.current);
+    const startCells = live.cells.map((c) => ({ ...c }));
+
+    const setFlying = () => {
+      const next = arrowsRef.current.map((a) =>
+        a.id === live.id ? { ...a, status: "flying" as ArrowStatus } : a
+      );
+      arrowsRef.current = next;
+      setArrows(next);
+    };
+
+    if (flight.result === "blocked") {
+      haptic("error");
+      await shakeAnim(live.rotateShake, settings.reducedMotion);
+      return;
+    }
+
+    setFlying();
+    haptic("light");
+
+    if (flight.result === "escape") {
+      bumpMoves();
+
+      await animateSnakeAlongPath(
+        live.id,
+        startCells,
+        live.direction,
+        flight.steps,
+        settings.reducedMotion
+      );
+
+      haptic("success");
+      await new Promise<void>((resolve) => {
+        Animated.timing(live.fade, {
+          toValue: 0,
+          duration: settings.reducedMotion ? 80 : 240,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start(() => resolve());
+      });
+
+      const updated = arrowsRef.current.map((a) =>
+        a.id === live.id ? { ...a, status: "escaped" as ArrowStatus } : a
+      );
+      arrowsRef.current = updated;
+      setArrows(updated);
+      checkWin(updated);
+      return;
+    }
+
+    await animateSnakeAlongPath(
+      live.id,
+      startCells,
+      live.direction,
+      flight.steps,
+      settings.reducedMotion
+    );
+    haptic("error");
+    await shakeAnim(live.rotateShake, settings.reducedMotion);
+
+    const final = flight.finalCells;
+
+    let updated = arrowsRef.current.map((a) => {
+      if (a.id === live.id) {
+        return {
+          ...a,
+          status: "broken" as ArrowStatus,
+          cells: final.map((c) => ({ ...c })),
+          visualCells: final.map((c) => ({ ...c })),
+        };
+      }
+      if (
+        a.status !== "escaped" &&
+        a.status !== "broken" &&
+        a.cells.some((c) => c.row === flight.hitRow && c.col === flight.hitCol)
+      ) {
+        return { ...a, status: "broken" as ArrowStatus };
+      }
+      return a;
+    });
+
+    arrowsRef.current = updated;
+    setArrows(updated);
+    bumpMoves();
+
+    updated
+      .filter((a) => a.status === "broken")
+      .forEach((a) =>
+        Animated.timing(a.fade, {
+          toValue: 0.25,
+          duration: 220,
+          useNativeDriver: true,
+        }).start()
+      );
+
+    setStatus("lost");
+    statusRef.current = "lost";
   };
 
   const onRestart = () => {
@@ -250,7 +400,14 @@ export default function Game() {
     setResetSignal((s) => s + 1);
   };
 
-  const onNext = () => {
+  const onNext = async () => {
+    try {
+      if (!ents?.removeAds && levelId % 2 === 0) {
+        await presentInterstitialAd();
+      }
+    } catch {
+      // never block navigation
+    }
     haptic("medium");
     router.replace({
       pathname: "/game",
@@ -259,6 +416,13 @@ export default function Game() {
   };
 
   const onSkip = async () => {
+    try {
+      if (!ents?.removeAds) {
+        await presentInterstitialAd();
+      }
+    } catch {
+      // never block skip
+    }
     haptic("warning");
     await skipLevel(levelId);
     router.replace({
@@ -268,7 +432,7 @@ export default function Game() {
   };
 
   const onHint = async () => {
-    if (!ents || ents.hintCredits <= 0 || animating || status !== "playing") {
+    if (!ents || ents.hintCredits <= 0 || status !== "playing") {
       if (!ents || ents.hintCredits <= 0) {
         haptic("warning");
         router.push("/store");
@@ -319,45 +483,41 @@ export default function Game() {
     router.back();
   };
 
-  // Render grid lines
+  // Wireframe grid: visible cell outlines, transparent interiors
   const gridLines = [];
-  for (let i = 1; i < level.cols; i++) {
-    gridLines.push(
-      <View
-        key={`v${i}`}
-        style={[
-          styles.gridLine,
-          {
-            backgroundColor: colors.border,
-            left: i * cellSize,
-            top: 0,
-            width: 1,
-            height: boardH,
-          },
-        ]}
-      />
-    );
+  for (let r = 0; r < level.rows; r++) {
+    for (let c = 0; c < level.cols; c++) {
+      if (!activeCellSet.has(cellKey(r, c))) continue;
+      gridLines.push(
+        <View
+          key={`cell-${r}-${c}`}
+          style={{
+            position: "absolute",
+            left: boardPad + c * cellSize,
+            top: boardPad + r * cellSize,
+            width: cellSize,
+            height: cellSize,
+            borderWidth: 1,
+            borderColor: colors.gridTrace,
+            backgroundColor: "transparent",
+          }}
+        />
+      );
+      gridLines.push(
+        <View
+          key={`pad-${r}-${c}`}
+          style={[
+            styles.gridPad,
+            {
+              backgroundColor: colors.gridPad,
+              left: boardPad + c * cellSize + cellSize / 2 - 2,
+              top: boardPad + r * cellSize + cellSize / 2 - 2,
+            },
+          ]}
+        />
+      );
+    }
   }
-  for (let i = 1; i < level.rows; i++) {
-    gridLines.push(
-      <View
-        key={`h${i}`}
-        style={[
-          styles.gridLine,
-          {
-            backgroundColor: colors.border,
-            top: i * cellSize,
-            left: 0,
-            height: 1,
-            width: boardW,
-          },
-        ]}
-      />
-    );
-  }
-
-  const arrowSizeFactor = settings.largeArrows ? 0.78 : 0.62;
-  const arrowSize = Math.max(12, Math.floor(cellSize * arrowSizeFactor));
 
   const idleArrows = arrows.filter(
     (a) => a.status === "idle" || a.status === "flying"
@@ -383,11 +543,19 @@ export default function Game() {
         </Pressable>
         <View style={styles.headerCenter}>
           <Text style={[styles.headerEyebrow, { color: colors.textMuted }]}>
-            LEVEL
+            {level.isSpecialShape ? "SPECIAL" : "LEVEL"}
           </Text>
           <Text style={[styles.headerTitle, { color: colors.text }]} testID="game-level-id">
             {levelId.toString().padStart(2, "0")}
           </Text>
+          {level.shapeName ? (
+            <Text
+              style={{ color: colors.yellow, fontSize: 11, fontWeight: "700", marginTop: 2 }}
+              numberOfLines={1}
+            >
+              {level.shapeName}
+            </Text>
+          ) : null}
         </View>
         <Pressable
           testID="game-restart-btn"
@@ -427,10 +595,13 @@ export default function Game() {
         </View>
         <View style={styles.statBlock}>
           <Text style={[styles.statLabel, { color: colors.textMuted }]}>
-            GRID
+            {level.isSpecialShape ? "SHAPE" : "GRID"}
           </Text>
-          <Text style={[styles.statValue, { color: colors.text, fontSize: 16 }]}>
-            {level.rows}×{level.cols}
+          <Text
+            style={[styles.statValue, { color: colors.text, fontSize: level.shapeName ? 12 : 16 }]}
+            numberOfLines={1}
+          >
+            {level.shapeName ?? `${level.rows}×${level.cols}`}
           </Text>
         </View>
       </View>
@@ -439,22 +610,37 @@ export default function Game() {
       <View
         style={styles.boardWrap}
         onLayout={(e) => {
-          const w = e.nativeEvent.layout.width - SPACING.md * 2;
-          if (w > 0 && Math.abs(w - containerW) > 4) setContainerW(w);
+          const { width, height } = e.nativeEvent.layout;
+          if (width > 0 && height > 0) {
+            setBoardSpace((prev) =>
+              Math.abs(prev.w - width) > 8 || Math.abs(prev.h - height) > 8
+                ? { w: width, h: height }
+                : prev
+            );
+          }
         }}
       >
         <View
           style={[
-            styles.board,
-            {
-              width: boardW,
-              height: boardH,
-              backgroundColor: colors.bgElev,
-              borderColor: colors.border,
-            },
+            styles.boardCanvas,
+            { width: canvasW, height: canvasH },
           ]}
-          testID="game-board"
         >
+          <View
+            style={[
+              styles.board,
+              {
+                left: boardPad,
+                top: boardPad,
+                width: boardW,
+                height: boardH,
+                backgroundColor: "transparent",
+                borderColor: colors.border,
+                borderWidth: level.isSpecialShape ? 0 : 1,
+              },
+            ]}
+            testID="game-board"
+          />
           {gridLines}
           {arrows.map((a) => {
             const rotation = a.rotateShake.interpolate({
@@ -462,79 +648,67 @@ export default function Game() {
               outputRange: ["-12deg", "0deg", "12deg"],
             });
             const isHinted = hintHighlight === a.id;
+            const trace =
+              a.status === "broken"
+                ? ARROW_GLOW.broken
+                : a.status === "escaped"
+                ? ARROW_GLOW.escaped
+                : isHinted
+                ? ARROW_GLOW.hint
+                : getNeonTrace(a.colorIndex);
+            const hit = pathHitBox(
+              a.visualCells,
+              cellSize,
+              boardPad,
+              a.direction
+            );
             return (
               <Animated.View
                 key={a.id}
                 style={[
-                  styles.arrowCell,
+                  styles.arrowPathWrap,
                   {
-                    width: cellSize,
-                    height: cellSize,
-                    transform: [
-                      { translateX: a.anim.x },
-                      { translateY: a.anim.y },
-                      { rotate: rotation },
-                    ],
+                    left: hit.left,
+                    top: hit.top,
+                    width: hit.width,
+                    height: hit.height,
+                    transform: [{ rotate: rotation }],
                     opacity: a.fade,
+                    pointerEvents: "none",
                   },
                 ]}
               >
-                <Pressable
-                  testID={`arrow-${a.id}`}
-                  accessibilityLabel={`Arrow pointing ${a.direction}`}
-                  onPress={() => fireArrow(a)}
-                  disabled={
-                    a.status !== "idle" || animating || status !== "playing"
-                  }
-                  style={({ pressed }) => [
-                    styles.arrowBtn,
-                    {
-                      width: cellSize - 6,
-                      height: cellSize - 6,
-                      backgroundColor:
-                        a.status === "broken" ? colors.surface : colors.bgElev,
-                      borderColor:
-                        a.status === "broken"
-                          ? colors.red
-                          : a.status === "escaped"
-                          ? colors.green
-                          : isHinted
-                          ? colors.yellow
-                          : colors.cyan,
-                      shadowColor:
-                        a.status === "broken"
-                          ? colors.red
-                          : isHinted
-                          ? colors.yellow
-                          : colors.cyan,
-                    },
-                    pressed && a.status === "idle" && { transform: [{ scale: 0.92 }] },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.arrowGlyph,
-                      {
-                        fontSize: arrowSize,
-                        color:
-                          a.status === "broken"
-                            ? colors.red
-                            : a.status === "escaped"
-                            ? colors.green
-                            : isHinted
-                            ? colors.yellow
-                            : colors.cyan,
-                        textShadowColor:
-                          a.status === "broken" ? colors.redGlow : colors.cyanGlow,
-                      },
-                    ]}
-                  >
-                    {ARROW_GLYPH[a.direction]}
-                  </Text>
-                </Pressable>
+                <NeonPathArrow
+                  cells={a.visualCells}
+                  direction={a.direction}
+                  cellSize={cellSize}
+                  boardPad={boardPad}
+                  color={trace.color}
+                  glow={trace.glow}
+                  dimmed={a.status === "escaped" || a.status === "broken"}
+                />
               </Animated.View>
             );
           })}
+          {/* Full grid-cell tap targets (easier than tapping thin arrow strokes) */}
+          {cellTapTargets.map(({ row, col, arrowId }) => (
+            <Pressable
+              key={`tap-${row}-${col}`}
+              testID={`cell-${row}-${col}`}
+              accessibilityLabel="Arrow cell"
+              onPress={() => fireArrowById(arrowId)}
+              disabled={status !== "playing"}
+              style={[
+                styles.cellTap,
+                {
+                  left: boardPad + col * cellSize,
+                  top: boardPad + row * cellSize,
+                  width: cellSize,
+                  height: cellSize,
+                },
+              ]}
+            />
+          ))}
         </View>
       </View>
 
@@ -543,7 +717,7 @@ export default function Game() {
         <Pressable
           testID="game-hint-btn"
           onPress={onHint}
-          disabled={animating || status !== "playing"}
+          disabled={status !== "playing"}
           style={({ pressed }) => [
             styles.actionChip,
             {
@@ -728,32 +902,32 @@ const styles = StyleSheet.create({
   statBlock: { alignItems: "center", flex: 1 },
   statLabel: { fontSize: 10, letterSpacing: 3, fontWeight: "700" },
   statValue: { fontSize: 18, fontWeight: "900", marginTop: 2 },
-  boardWrap: { alignItems: "center", justifyContent: "center", flex: 1 },
+  boardWrap: { alignItems: "center", justifyContent: "center", flex: 1, overflow: "visible" },
+  boardCanvas: {
+    position: "relative",
+    overflow: "visible",
+  },
   board: {
+    position: "absolute",
     borderRadius: RADIUS.md,
     borderWidth: 1,
-    overflow: "hidden",
   },
-  gridLine: { position: "absolute", opacity: 0.6 },
-  arrowCell: {
+  gridLine: { position: "absolute", opacity: 0.35 },
+  gridPad: {
     position: "absolute",
-    alignItems: "center",
-    justifyContent: "center",
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    opacity: 0.25,
   },
-  arrowBtn: {
-    borderRadius: RADIUS.sm,
-    borderWidth: 1.5,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowOpacity: 0.6,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 4,
+  arrowPathWrap: {
+    position: "absolute",
+    overflow: "visible",
   },
-  arrowGlyph: {
-    fontWeight: "900",
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 12,
+  cellTap: {
+    position: "absolute",
+    backgroundColor: "transparent",
+    zIndex: 10,
   },
   actionBar: {
     flexDirection: "row",

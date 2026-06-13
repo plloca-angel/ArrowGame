@@ -11,6 +11,8 @@ import {
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as Linking from "expo-linking";
+import Constants from "expo-constants";
 import * as WebBrowser from "expo-web-browser";
 import { useSettings } from "../src/SettingsContext";
 import {
@@ -21,7 +23,41 @@ import {
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
 
-const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL!;
+function getBackendBaseUrl(): string {
+  const fromMetro = process.env.EXPO_PUBLIC_BACKEND_URL;
+  const fromConfig = (
+    Constants.expoConfig?.extra as { EXPO_PUBLIC_BACKEND_URL?: string } | undefined
+  )?.EXPO_PUBLIC_BACKEND_URL;
+  return (fromMetro || fromConfig || "").replace(/\/$/, "");
+}
+
+const BACKEND = getBackendBaseUrl();
+
+function getPrivacyPolicyUrl(): string {
+  const fromMetro = process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL;
+  const fromConfig = (
+    Constants.expoConfig?.extra as { EXPO_PUBLIC_PRIVACY_POLICY_URL?: string } | undefined
+  )?.EXPO_PUBLIC_PRIVACY_POLICY_URL;
+  return (fromMetro || fromConfig || "").trim();
+}
+
+/**
+ * Stripe success/cancel URLs are built on the server as `{origin}/store?...`.
+ * On native we must pass an app deep-link base (e.g. exp://…/--), not the API host,
+ * or the user lands on the backend URL after paying and the app never sees session_id.
+ */
+function getCheckoutOriginUrl(): string {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    return window.location.origin;
+  }
+  const storeUrl = Linking.createURL("store");
+  const tail = "/store";
+  const i = storeUrl.lastIndexOf(tail);
+  if (i !== -1) {
+    return storeUrl.slice(0, i);
+  }
+  return storeUrl;
+}
 
 type Product = {
   id: string;
@@ -63,12 +99,32 @@ export default function StoreScreen() {
   }, []);
 
   useEffect(() => {
-    fetch(`${BACKEND}/api/products`)
-      .then((r) => r.json())
-      .then(setProducts)
-      .catch(() => {
-        setStatusMsg({ text: "Couldn't load products. Check connection.", kind: "error" });
+    if (!BACKEND) {
+      setStatusMsg({
+        text:
+          "Missing API URL. Set EXPO_PUBLIC_BACKEND_URL in frontend/.env (see .env.example), then run: npx expo start --clear",
+        kind: "error",
       });
+      return;
+    }
+    (async () => {
+      try {
+        const r = await fetch(`${BACKEND}/api/products`);
+        if (!r.ok) {
+          throw new Error(`products ${r.status}`);
+        }
+        const data = await r.json();
+        if (!Array.isArray(data)) {
+          throw new Error("invalid products payload");
+        }
+        setProducts(data);
+      } catch {
+        setStatusMsg({
+          text: "Couldn't load products. Check connection and API URL.",
+          kind: "error",
+        });
+      }
+    })();
     refreshEnts();
   }, [refreshEnts]);
 
@@ -92,6 +148,7 @@ export default function StoreScreen() {
   }, [params.session_id, params.cancelled]);
 
   async function pollStatus(sessionId: string) {
+    if (!BACKEND) return;
     const MAX = 6;
     if (pollAttempts.current >= MAX) {
       setStatusMsg({
@@ -132,15 +189,19 @@ export default function StoreScreen() {
   }
 
   async function buy(product: Product) {
+    if (!BACKEND) {
+      setStatusMsg({
+        text: "Configure EXPO_PUBLIC_BACKEND_URL before purchasing.",
+        kind: "error",
+      });
+      return;
+    }
     haptic("medium");
     setLoadingProductId(product.id);
     setStatusMsg(null);
     try {
       const deviceId = await getDeviceId();
-      const origin =
-        Platform.OS === "web" && typeof window !== "undefined"
-          ? window.location.origin
-          : BACKEND;
+      const origin = getCheckoutOriginUrl();
       const res = await fetch(`${BACKEND}/api/checkout/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -153,12 +214,24 @@ export default function StoreScreen() {
       if (!res.ok) throw new Error("checkout create failed");
       const { url } = await res.json();
       if (Platform.OS === "web") {
-        // Direct browser redirect for web preview so deep links work cleanly
         window.location.href = url;
       } else {
-        await WebBrowser.openBrowserAsync(url);
-        // After returning, re-check entitlements (user may have completed)
-        refreshEnts();
+        const returnUrl = Linking.createURL("store");
+        try {
+          const auth = await WebBrowser.openAuthSessionAsync(url, returnUrl);
+          WebBrowser.maybeCompleteAuthSession();
+          if (auth.type === "success" && auth.url) {
+            const raw = Linking.parse(auth.url).queryParams?.session_id;
+            const sid = Array.isArray(raw) ? raw[0] : raw;
+            if (typeof sid === "string") {
+              pollAttempts.current = 0;
+              await pollStatus(sid);
+            }
+          }
+        } catch {
+          await WebBrowser.openBrowserAsync(url);
+        }
+        await refreshEnts();
       }
     } catch (e) {
       haptic("error");
@@ -336,6 +409,9 @@ export default function StoreScreen() {
         <Text style={[styles.disclaimer, { color: colors.textMuted }]}>
           Powered by Stripe · Test mode. Card 4242 4242 4242 4242 / any future date
           / any CVC.
+          {getPrivacyPolicyUrl()
+            ? `\n\nPrivacy policy: ${getPrivacyPolicyUrl()}`
+            : ""}
         </Text>
       </ScrollView>
     </View>

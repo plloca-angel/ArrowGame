@@ -22,13 +22,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     highContrast: false,
     colorBlindSafe: false,
   });
-  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    loadSettings().then((s) => {
-      setSettings(s);
-      setLoaded(true);
-    });
+    loadSettings()
+      .then((s) => setSettings(s))
+      .catch(() => {});
   }, []);
 
   const setSetting = useCallback(
@@ -78,8 +76,6 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     },
     [settings.haptics]
   );
-
-  if (!loaded) return null;
 
   return (
     <SettingsContext.Provider value={{ settings, setSetting, colors, haptic }}>

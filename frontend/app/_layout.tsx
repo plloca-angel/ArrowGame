@@ -1,12 +1,12 @@
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SettingsProvider } from "../src/SettingsContext";
+import { ErrorBoundary } from "../src/ErrorBoundary";
 
 export default function RootLayout() {
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#05060a" }}>
+    <ErrorBoundary>
       <SafeAreaProvider>
         <SettingsProvider>
           <StatusBar style="light" />
@@ -14,11 +14,10 @@ export default function RootLayout() {
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: "#05060a" },
-              animation: "fade",
             }}
           />
         </SettingsProvider>
       </SafeAreaProvider>
-    </GestureHandlerRootView>
+    </ErrorBoundary>
   );
 }

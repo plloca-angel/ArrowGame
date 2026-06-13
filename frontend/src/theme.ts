@@ -42,10 +42,13 @@ export function getColors(opts: ThemeOpts = {}) {
   const { variant = "cyan", highContrast, colorBlindSafe } = opts;
   const palette = colorBlindSafe ? COLOR_BLIND_SAFE : PALETTES[variant];
   return {
-    bg: highContrast ? "#000000" : "#05060a",
-    bgElev: highContrast ? "#0a0a0a" : "#0b0e17",
-    surface: highContrast ? "#111111" : "#10131f",
-    border: highContrast ? "#3a3a3a" : "#1c2236",
+    bg: highContrast ? "#000000" : "#030408",
+    bgElev: highContrast ? "#0a0a0a" : "#060810",
+    board: highContrast ? "#050505" : "#04060c",
+    surface: highContrast ? "#111111" : "#0c0f18",
+    border: highContrast ? "#2a3040" : "#151b2e",
+    gridTrace: highContrast ? "#2a3548" : "#12182a",
+    gridPad: highContrast ? "#3a4558" : "#1a2238",
     text: "#f5f7ff",
     textDim: highContrast ? "#cfcfcf" : "#7d83a3",
     textMuted: highContrast ? "#9a9a9a" : "#4b5174",

@@ -86,14 +86,14 @@ export default function SettingsScreen() {
           />
           <ToggleRow
             colors={colors}
-            label="Haptics"
-            description="Vibrate on interactions"
+            label="Vibration"
+            description="Off to disable all vibrations and haptic feedback"
             value={settings.haptics}
             onChange={(v) => {
               setSetting("haptics", v);
               if (v) haptic("selection");
             }}
-            testID="setting-haptics"
+            testID="setting-vibration"
           />
         </Section>
 
@@ -117,7 +117,7 @@ export default function SettingsScreen() {
                       backgroundColor: colors.surface,
                       borderColor: active ? palette : colors.border,
                       shadowColor: active ? palette : "transparent",
-                      transform: pressed ? [{ scale: 0.97 }] : undefined,
+                      ...(pressed ? { transform: [{ scale: 0.97 }] } : {}),
                     },
                   ]}
                 >

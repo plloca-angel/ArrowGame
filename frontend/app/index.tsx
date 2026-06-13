@@ -66,7 +66,7 @@ export default function Home() {
     router.push({ pathname: "/game", params: { level: String(nextLevel) } });
   };
 
-  const titleShadow = glow.interpolate({
+  const titleShadow = settings.reducedMotion ? 20 : glow.interpolate({
     inputRange: [0, 1],
     outputRange: [12, 28],
   });
