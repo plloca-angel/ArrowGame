@@ -14,7 +14,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "../src/SettingsContext";
 import { loadProgress, Progress, loadEntitlements, Entitlements } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
-import { AdBanner } from "../src/AdBanner";
 
 export default function Home() {
   const router = useRouter();
@@ -318,11 +317,6 @@ export default function Home() {
               Sound · Theme · Reset
             </Text>
           </Pressable>
-        </View>
-
-        {/* Banner ad */}
-        <View style={{ marginTop: SPACING.lg }}>
-          <AdBanner />
         </View>
       </ScrollView>
     </View>

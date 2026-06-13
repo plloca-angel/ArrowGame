@@ -11,71 +11,25 @@ import {
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import * as Linking from "expo-linking";
-import Constants from "expo-constants";
 import * as WebBrowser from "expo-web-browser";
 import { useSettings } from "../src/SettingsContext";
 import {
   loadEntitlements,
   Entitlements,
-  grantPurchase,
-  getDeviceId,
 } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
+import {
+  listProducts,
+  purchase as iapPurchase,
+  pollStatus as iapPollStatus,
+  restorePurchases,
+  IAP_BACKEND,
+  IapProduct,
+} from "../src/services/iap";
 
-function getBackendBaseUrl(): string {
-  const fromMetro = process.env.EXPO_PUBLIC_BACKEND_URL;
-  const fromConfig = (
-    Constants.expoConfig?.extra as { EXPO_PUBLIC_BACKEND_URL?: string } | undefined
-  )?.EXPO_PUBLIC_BACKEND_URL;
-  return (fromMetro || fromConfig || "").replace(/\/$/, "");
-}
+const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL!;
 
-const BACKEND = getBackendBaseUrl();
-
-function getPrivacyPolicyUrl(): string {
-  const fromMetro = process.env.EXPO_PUBLIC_PRIVACY_POLICY_URL;
-  const fromConfig = (
-    Constants.expoConfig?.extra as { EXPO_PUBLIC_PRIVACY_POLICY_URL?: string } | undefined
-  )?.EXPO_PUBLIC_PRIVACY_POLICY_URL;
-  return (fromMetro || fromConfig || "").trim();
-}
-
-/**
- * Stripe success/cancel URLs are built on the server as `{origin}/store?...`.
- * On native we must pass an app deep-link base (e.g. exp://…/--), not the API host,
- * or the user lands on the backend URL after paying and the app never sees session_id.
- */
-function getCheckoutOriginUrl(): string {
-  if (Platform.OS === "web" && typeof window !== "undefined") {
-    return window.location.origin;
-  }
-  const storeUrl = Linking.createURL("store");
-  const tail = "/store";
-  const i = storeUrl.lastIndexOf(tail);
-  if (i !== -1) {
-    return storeUrl.slice(0, i);
-  }
-  return storeUrl;
-}
-
-type Product = {
-  id: string;
-  name: string;
-  amount: number;
-  currency: string;
-  kind: string;
-};
-
-type CheckoutStatus = {
-  session_id: string;
-  status: string;
-  payment_status: string;
-  product_id: string;
-  granted: boolean;
-  amount_total: number;
-  currency: string;
-};
+type Product = IapProduct;
 
 export default function StoreScreen() {
   const router = useRouter();
@@ -99,32 +53,11 @@ export default function StoreScreen() {
   }, []);
 
   useEffect(() => {
-    if (!BACKEND) {
-      setStatusMsg({
-        text:
-          "Missing API URL. Set EXPO_PUBLIC_BACKEND_URL in frontend/.env (see .env.example), then run: npx expo start --clear",
-        kind: "error",
+    listProducts()
+      .then(setProducts)
+      .catch(() => {
+        setStatusMsg({ text: "Couldn't load products. Check connection.", kind: "error" });
       });
-      return;
-    }
-    (async () => {
-      try {
-        const r = await fetch(`${BACKEND}/api/products`);
-        if (!r.ok) {
-          throw new Error(`products ${r.status}`);
-        }
-        const data = await r.json();
-        if (!Array.isArray(data)) {
-          throw new Error("invalid products payload");
-        }
-        setProducts(data);
-      } catch {
-        setStatusMsg({
-          text: "Couldn't load products. Check connection and API URL.",
-          kind: "error",
-        });
-      }
-    })();
     refreshEnts();
   }, [refreshEnts]);
 
@@ -148,7 +81,6 @@ export default function StoreScreen() {
   }, [params.session_id, params.cancelled]);
 
   async function pollStatus(sessionId: string) {
-    if (!BACKEND) return;
     const MAX = 6;
     if (pollAttempts.current >= MAX) {
       setStatusMsg({
@@ -159,86 +91,60 @@ export default function StoreScreen() {
     }
     pollAttempts.current += 1;
     setStatusMsg({ text: "Confirming payment…", kind: "pending" });
-    try {
-      const res = await fetch(
-        `${BACKEND}/api/checkout/status/${sessionId}`
-      );
-      if (!res.ok) throw new Error("status fetch failed");
-      const data: CheckoutStatus = await res.json();
-      if (data.payment_status === "paid") {
-        await grantPurchase(sessionId, data.product_id);
-        await refreshEnts();
-        haptic("success");
-        setStatusMsg({
-          text:
-            data.product_id === "remove_ads"
-              ? "Ads removed. Enjoy!"
-              : "Hints added to your account!",
-          kind: "success",
-        });
-        return;
-      }
-      if (data.status === "expired") {
-        setStatusMsg({ text: "Payment expired.", kind: "error" });
-        return;
-      }
-      setTimeout(() => pollStatus(sessionId), 2000);
-    } catch (e) {
-      setStatusMsg({ text: "Error checking status. Try again.", kind: "error" });
-    }
-  }
-
-  async function buy(product: Product) {
-    if (!BACKEND) {
+    const result = await iapPollStatus(sessionId);
+    if (result.paid) {
+      await refreshEnts();
+      haptic("success");
       setStatusMsg({
-        text: "Configure EXPO_PUBLIC_BACKEND_URL before purchasing.",
-        kind: "error",
+        text:
+          result.productId === "remove_ads"
+            ? "Ads removed. Enjoy!"
+            : "Hints added to your account!",
+        kind: "success",
       });
       return;
     }
+    setTimeout(() => pollStatus(sessionId), 2000);
+  }
+
+  async function buy(product: Product) {
     haptic("medium");
     setLoadingProductId(product.id);
     setStatusMsg(null);
-    try {
-      const deviceId = await getDeviceId();
-      const origin = getCheckoutOriginUrl();
-      const res = await fetch(`${BACKEND}/api/checkout/session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          product_id: product.id,
-          origin_url: origin,
-          user_id: deviceId,
-        }),
-      });
-      if (!res.ok) throw new Error("checkout create failed");
-      const { url } = await res.json();
-      if (Platform.OS === "web") {
-        window.location.href = url;
-      } else {
-        const returnUrl = Linking.createURL("store");
-        try {
-          const auth = await WebBrowser.openAuthSessionAsync(url, returnUrl);
-          WebBrowser.maybeCompleteAuthSession();
-          if (auth.type === "success" && auth.url) {
-            const raw = Linking.parse(auth.url).queryParams?.session_id;
-            const sid = Array.isArray(raw) ? raw[0] : raw;
-            if (typeof sid === "string") {
-              pollAttempts.current = 0;
-              await pollStatus(sid);
-            }
-          }
-        } catch {
-          await WebBrowser.openBrowserAsync(url);
-        }
-        await refreshEnts();
+    const result = await iapPurchase(product);
+    setLoadingProductId(null);
+    if (!result.success) {
+      if (result.error !== "Cancelled") {
+        haptic("error");
+        setStatusMsg({ text: result.error ?? "Couldn't start checkout.", kind: "error" });
       }
-    } catch (e) {
-      haptic("error");
-      setStatusMsg({ text: "Couldn't start checkout.", kind: "error" });
-    } finally {
-      setLoadingProductId(null);
+      return;
     }
+    if (IAP_BACKEND === "native") {
+      // Native IAP grants synchronously
+      await refreshEnts();
+      haptic("success");
+      setStatusMsg({
+        text:
+          product.id === "remove_ads"
+            ? "Ads removed. Enjoy!"
+            : "Hints added to your account!",
+        kind: "success",
+      });
+    } else if (result.sessionId) {
+      // Stripe web: opened in a new tab; user returns and we poll
+      setStatusMsg({
+        text: "Complete checkout in the opened tab. We'll update when done.",
+        kind: "pending",
+      });
+    }
+  }
+
+  async function onRestore() {
+    haptic("selection");
+    await restorePurchases();
+    await refreshEnts();
+    setStatusMsg({ text: "Restored.", kind: "success" });
   }
 
   return (
@@ -409,9 +315,6 @@ export default function StoreScreen() {
         <Text style={[styles.disclaimer, { color: colors.textMuted }]}>
           Powered by Stripe · Test mode. Card 4242 4242 4242 4242 / any future date
           / any CVC.
-          {getPrivacyPolicyUrl()
-            ? `\n\nPrivacy policy: ${getPrivacyPolicyUrl()}`
-            : ""}
         </Text>
       </ScrollView>
     </View>
