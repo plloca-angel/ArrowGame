@@ -51,19 +51,16 @@
       ],
       "expo-asset",
       "expo-font",
-      "expo-iap",
-      [
-        "react-native-google-mobile-ads",
-        {
-          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
-          "iosAppId": "ca-app-pub-3940256099942544~1458002511",
-          "userTrackingUsageDescription": "Allows us to show ads that are relevant to you so we can keep Arrow Escape free.",
-          "delayAppMeasurementInit": true
-        }
-      ]
+      "expo-iap"
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "689dadc5-a202-4770-b51c-b74dc4c20b03"
+      }
     }
   }
 }

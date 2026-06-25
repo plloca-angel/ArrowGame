@@ -1,0 +1,31 @@
+# Optional: set repository secret EXPO_TOKEN (https://expo.dev/accounts/[account]/settings/access-tokens)
+# and link this project with `npm run eas:init` in frontend/. Without a token, the EAS step is skipped.
+
+name: EAS device build
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 7 * * 1'
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - name: EAS Build (production)
+        if: ${{ secrets.EXPO_TOKEN != '' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx eas-cli build --platform all --profile production --non-interactive --no-wait

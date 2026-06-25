@@ -18,9 +18,10 @@
     "verify:levels": "tsx scripts/verify-all-levels.ts 300 25",
     "verify:level": "tsx scripts/audit-level.ts",
     "prebuild:levels": "tsx scripts/prebuild-levels.ts 200",
-    "prebuild:android": "powershell -ExecutionPolicy Bypass -File ./scripts/prebuild-android.ps1",
-    "build:apk:local": "powershell -ExecutionPolicy Bypass -File ./scripts/build-apk.ps1 -Variant debug",
-    "build:apk:cloud": "powershell -ExecutionPolicy Bypass -File ./scripts/build-apk-cloud.ps1"
+    "eas:login": "powershell -ExecutionPolicy Bypass -File ./scripts/eas.ps1 login",
+    "eas:init": "powershell -ExecutionPolicy Bypass -File ./scripts/eas.ps1 init",
+    "build:apk": "powershell -ExecutionPolicy Bypass -File ./scripts/eas.ps1 build --platform android --profile preview",
+    "build:production": "powershell -ExecutionPolicy Bypass -File ./scripts/eas.ps1 build --platform all --profile production"
   },
   "dependencies": {
     "@babel/runtime": "^7.20.6",

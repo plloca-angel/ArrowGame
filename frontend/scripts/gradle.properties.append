@@ -1,0 +1,2 @@
+# Applied to android/gradle.properties after each expo prebuild.
+org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m -Djavax.net.ssl.trustStoreType=Windows-ROOT

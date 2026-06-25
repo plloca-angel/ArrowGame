@@ -1,0 +1,11 @@
+android/
+ios/
+.gradle-local/
+.metro-cache/
+.expo-export-test/
+.expo-bundle-check/
+.expo-crash-check/
+.expo-export-test/
+.expo-bundle-check/
+.expo-crash-check/
+.expo-verify/

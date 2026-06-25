@@ -36,8 +36,14 @@ const nativeAdsBuild =
   process.env.EXPO_PUBLIC_NATIVE_ADS_BUILD === "true" ||
   process.env.EXPO_PUBLIC_NATIVE_ADS_BUILD === "1";
 
+const NATIVE_ONLY_PLUGINS = new Set([
+  "react-native-google-mobile-ads",
+  "expo-tracking-transparency",
+]);
+
 const basePlugins = (appJson.expo.plugins || []).filter((plugin) => {
   const name = Array.isArray(plugin) ? plugin[0] : plugin;
+  if (nativeAdsBuild && NATIVE_ONLY_PLUGINS.has(name)) return false;
   if (name !== "expo-iap") return true;
   try {
     require.resolve("expo-iap");
@@ -54,7 +60,11 @@ const adPlugins = nativeAdsBuild
   ? [
       [
         "react-native-google-mobile-ads",
-        { androidAppId, iosAppId },
+        {
+          androidAppId,
+          iosAppId,
+          delayAppMeasurementInit: true,
+        },
       ],
       [
         "expo-tracking-transparency",
@@ -87,7 +97,6 @@ module.exports = {
     android: {
       ...appJson.expo.android,
       package: "com.arrowescape.app",
-      versionCode: 1,
     },
     plugins: [...basePlugins, ...adPlugins],
     extra: {
