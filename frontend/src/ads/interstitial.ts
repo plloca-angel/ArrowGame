@@ -27,7 +27,7 @@ export async function presentInterstitialAd(): Promise<void> {
 
       const timeout = setTimeout(done, SHOW_TIMEOUT_MS);
 
-      const unsubs: Array<() => void> = [];
+      const unsubs: (() => void)[] = [];
 
       unsubs.push(
         interstitial.addAdEventListener(AdEventType.LOADED, () => {

@@ -10,40 +10,26 @@ import {
 } from "./boardShapes";
 import {
   canPlaceArrowWithOthers,
-  verifyCanonicalSolveOrder,
+  isLevelSolvable,
+  levelHasBlockedStarts,
+  levelHasMultiCellPaths,
+  verifyGreedyClearBoard,
   verifyFullGridFill,
 } from "./levelSolvability";
+import type { ArrowDef, Direction, GridCell, Level } from "./levelModel";
+import {
+  cellKey,
+  DIR_VEC,
+  getLevelFlightSurface,
+} from "./levelModel";
+import prebuiltLevelData from "./data/prebuiltLevels.json";
+import {
+  hydratePersistedLevels,
+  persistGeneratedLevel,
+} from "./levelPersistence";
 
-export type Direction = "up" | "down" | "left" | "right";
-
-export type GridCell = { row: number; col: number };
-
-export type ArrowDef = {
-  /** Tail → head (head is last cell). */
-  cells: GridCell[];
-  direction: Direction;
-};
-
-export type Level = {
-  id: number;
-  rows: number;
-  cols: number;
-  arrows: ArrowDef[];
-  hint?: string;
-  /** Present on levels 5, 10, 15 … */
-  shapeName?: string;
-  shapeCategory?: string;
-  isSpecialShape?: boolean;
-  /** Playable cells; omitted on standard full rectangles. */
-  activeCells?: GridCell[];
-};
-
-export const DIR_VEC: Record<Direction, [number, number]> = {
-  up: [-1, 0],
-  down: [1, 0],
-  left: [0, -1],
-  right: [0, 1],
-};
+export type { ArrowDef, Direction, GridCell, Level } from "./levelModel";
+export { cellKey, getLevelActiveCellSet, DIR_VEC } from "./levelModel";
 
 const OPPOSITE: Record<Direction, Direction> = {
   up: "down",
@@ -52,29 +38,12 @@ const OPPOSITE: Record<Direction, Direction> = {
   right: "left",
 };
 
-export function cellKey(r: number, c: number) {
-  return `${r},${c}`;
-}
-
-export function oppositeDir(d: Direction): Direction {
+function oppositeDir(d: Direction): Direction {
   return OPPOSITE[d];
 }
 
-export function dirAngle(d: Direction): number {
-  switch (d) {
-    case "right":
-      return 0;
-    case "down":
-      return 90;
-    case "left":
-      return 180;
-    case "up":
-      return -90;
-  }
-}
-
 export function getLevelDimensions(id: number): { rows: number; cols: number } {
-  const ramp: Array<[number, number]> = [
+  const ramp: [number, number][] = [
     [3, 3], [3, 4], [3, 4],
     [4, 4], [4, 4],
     [4, 5], [4, 5],
@@ -111,19 +80,27 @@ function mulberry32(seed: number) {
   };
 }
 
-function shuffleDirs(dirs: Direction[], rand: () => number) {
-  for (let i = dirs.length - 1; i > 0; i--) {
+function shuffleArray<T>(arr: T[], rand: () => number): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
-    [dirs[i], dirs[j]] = [dirs[j], dirs[i]];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-  return dirs;
+  return arr;
 }
 
-export function getLevelActiveCellSet(level: Level): Set<string> {
-  if (level.activeCells?.length) {
-    return new Set(level.activeCells.map((c) => cellKey(c.row, c.col)));
+function shuffleDirs(dirs: Direction[], rand: () => number) {
+  return shuffleArray(dirs, rand);
+}
+
+function shuffledLengthRange(minLen: number, maxLen: number, rand: () => number): number[] {
+  const lengths: number[] = [];
+  for (let len = minLen; len <= maxLen; len++) lengths.push(len);
+  if (rand() < 0.7) {
+    shuffleArray(lengths, rand);
+  } else {
+    lengths.reverse();
   }
-  return fullRectCellSet(level.rows, level.cols);
+  return lengths;
 }
 
 function occupiedNeighborScore(
@@ -218,7 +195,7 @@ function growPath(
       if (occupied.has(cellKey(nr, nc))) continue;
       if (path.some((p) => p.row === nr && p.col === nc)) continue;
 
-      let score = rand() * 0.25;
+      let score = rand() * 1.35;
       if (seg === 1) {
         if (d === oppositeDir(dir)) score += 2.5;
         const perpToExit = d !== dir && d !== oppositeDir(dir);
@@ -242,7 +219,7 @@ function growPath(
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => b.score - a.score);
     const best = candidates[0].score;
-    const top = candidates.filter((cand) => cand.score >= best - 0.45);
+    const top = candidates.filter((cand) => cand.score >= best - (0.35 + rand() * 0.55));
     const picked = top[Math.floor(rand() * top.length)].d;
 
     const [dr, dc] = DIR_VEC[picked];
@@ -319,7 +296,8 @@ function tryPlaceSingle(
   c: number,
   placed: ArrowDef[],
   activeCells: Set<string>,
-  rand: () => number
+  rand: () => number,
+  special = false
 ): ArrowDef | null {
   const dirs: Direction[] = ["up", "down", "left", "right"];
   shuffleDirs(dirs, rand);
@@ -330,13 +308,75 @@ function tryPlaceSingle(
         candidate,
         placed,
         activeCells,
-        placementContext(id, rows, cols, placed, candidate)
+        placementContext(id, rows, cols, placed, candidate, activeCells, special)
       )
     ) {
       return candidate;
     }
   }
   return null;
+}
+
+/** Try flipping arrow directions until the board becomes solvable. */
+function repairDirectionsToSolvable(level: Level): Level | null {
+  const dirs: Direction[] = ["up", "down", "left", "right"];
+  const arrows = level.arrows.map((a) => ({
+    cells: a.cells.map((c) => ({ ...c })),
+    direction: a.direction,
+  }));
+  const rand = mulberry32(level.id * 919191);
+
+  for (let pass = 0; pass < 48; pass++) {
+    const i = Math.floor(rand() * arrows.length);
+    const options = dirs.filter((d) => d !== arrows[i].direction);
+    shuffleDirs(options, rand);
+    for (const dir of options) {
+      arrows[i].direction = dir;
+      const trial: Level = { ...level, arrows: arrows.map((a) => ({ ...a })) };
+      if (!verifyFullGridFill(trial) || !levelHasMultiCellPaths(trial)) continue;
+      if (trial.arrows.length >= 2 && !levelHasBlockedStarts(trial)) continue;
+      if (verifyGreedyClearBoard(trial)) {
+        return trial;
+      }
+    }
+  }
+  return null;
+}
+
+function forceFillOutwardSingles(
+  rows: number,
+  cols: number,
+  activeCells: Set<string>,
+  occupied: Set<string>,
+  placed: ArrowDef[],
+  level: Level
+): void {
+  const surface = getLevelFlightSurface(level);
+  for (const key of activeCells) {
+    if (occupied.has(key)) continue;
+    const [r, c] = key.split(",").map(Number);
+    const dirs: Direction[] = ["up", "down", "left", "right"];
+    let chosen: ArrowDef | null = null;
+    for (const dir of dirs) {
+      const [dr, dc] = DIR_VEC[dir];
+      const nr = r + dr;
+      const nc = c + dc;
+      if (
+        surface.blockInteriorVoids &&
+        surface.inBounds(nr, nc) &&
+        !surface.isPlayable(nr, nc)
+      ) {
+        continue;
+      }
+      chosen = { cells: [{ row: r, col: c }], direction: dir };
+      break;
+    }
+    if (!chosen) {
+      chosen = { cells: [{ row: r, col: c }], direction: "up" };
+    }
+    placed.push(chosen);
+    occupied.add(key);
+  }
 }
 
 function fillRemainingSingles(
@@ -346,13 +386,14 @@ function fillRemainingSingles(
   activeCells: Set<string>,
   occupied: Set<string>,
   placed: ArrowDef[],
-  rand: () => number
+  rand: () => number,
+  special = false
 ): boolean {
   let filled = false;
   for (const key of activeCells) {
     if (occupied.has(key)) continue;
     const [r, c] = key.split(",").map(Number);
-    const single = tryPlaceSingle(id, rows, cols, r, c, placed, activeCells, rand);
+    const single = tryPlaceSingle(id, rows, cols, r, c, placed, activeCells, rand, special);
     if (!single) continue;
     occupied.add(key);
     placed.push(single);
@@ -361,19 +402,41 @@ function fillRemainingSingles(
   return filled;
 }
 
+// One reusable context Level per activeCells set. canArrowEscapeNow only reads
+// id/rows/cols/isSpecialShape/activeCells from the level (never level.arrows —
+// occupancy comes from the `all` array canPlaceArrowWithOthers builds itself),
+// so a single stable object is correct for every placement check in a given
+// generation. This is the hot path: without it, each of the thousands of
+// candidate checks per generation rebuilt the activeCells array AND its Set,
+// which is what made special-shape levels take 10–25s to generate.
+const placementCtxCache = new WeakMap<Set<string>, Level>();
+
 function placementContext(
   id: number,
   rows: number,
   cols: number,
-  placed: ArrowDef[],
-  candidate: ArrowDef
+  _placed: ArrowDef[],
+  _candidate: ArrowDef,
+  activeCells: Set<string>,
+  special: boolean
 ): Level {
-  return {
+  const cached = placementCtxCache.get(activeCells);
+  if (cached) return cached;
+  const level: Level = {
     id,
     rows,
     cols,
-    arrows: [...placed, candidate],
+    arrows: [],
+    isSpecialShape: special,
+    activeCells: special
+      ? [...activeCells].map((key) => {
+          const [r, c] = key.split(",").map(Number);
+          return { row: r, col: c };
+        })
+      : undefined,
   };
+  placementCtxCache.set(activeCells, level);
+  return level;
 }
 
 function levelFromPlaced(
@@ -403,13 +466,21 @@ function levelFromPlaced(
   };
 }
 
-function acceptGeneratedLevel(draft: Level): boolean {
-  return verifyFullGridFill(draft) && verifyCanonicalSolveOrder(draft);
+function passesAcceptance(draft: Level): boolean {
+  if (!verifyFullGridFill(draft) || !levelHasMultiCellPaths(draft)) return false;
+  if (draft.arrows.length >= 2 && !levelHasBlockedStarts(draft)) return false;
+  return verifyGreedyClearBoard(draft) || isLevelSolvable(draft);
 }
 
-export function generateLevel(id: number): Level {
+function acceptGeneratedLevel(draft: Level): boolean {
+  if (!verifyFullGridFill(draft) || !levelHasMultiCellPaths(draft)) return false;
+  if (draft.arrows.length >= 2 && !levelHasBlockedStarts(draft)) return false;
+  return verifyGreedyClearBoard(draft);
+}
+
+export function generateLevel(id: number, shapeBump = 0): Level {
   const special = isSpecialShapeLevel(id);
-  const shape = special ? getBoardShapeForLevel(id) : null;
+  const shape = special ? getBoardShapeForLevel(id, shapeBump) : null;
   const baseDim = getLevelDimensions(id);
   const rows = shape?.rows ?? baseDim.rows;
   const cols = shape?.cols ?? baseDim.cols;
@@ -418,44 +489,35 @@ export function generateLevel(id: number): Level {
     : fullRectCellSet(rows, cols);
   const target = activeCells.size;
 
-  for (let attempt = 0; attempt < (special ? 500 : 350); attempt++) {
+  for (let attempt = 0; attempt < (special ? 120 : 80); attempt++) {
     const rand = mulberry32(id * 1000003 + attempt);
     const occupied = new Set<string>();
     const placed: ArrowDef[] = [];
 
     while (occupied.size < target) {
-      const empties: { r: number; c: number; d: number; weave: number }[] = [];
+      const emptyCells: GridCell[] = [];
       for (const key of activeCells) {
         if (occupied.has(key)) continue;
         const [r, c] = key.split(",").map(Number);
-        empties.push({
-          r,
-          c,
-          d: Math.min(r, rows - 1 - r, c, cols - 1 - c),
-          weave: occupiedNeighborScore(r, c, occupied),
-        });
+        emptyCells.push({ row: r, col: c });
       }
 
-      if (empties.length === 0) break;
+      if (emptyCells.length === 0) break;
 
-      empties.sort(
-        (a, b) =>
-          b.weave - a.weave ||
-          b.d - a.d ||
-          rand() - 0.5
-      );
+      const placementOrder = pickPlacementOrder(emptyCells, rand, rows, cols);
 
       let placedThis = false;
-      for (const { r, c } of empties) {
-        const dirs: Direction[] = ["up", "down", "left", "right"];
-        shuffleDirs(dirs, rand);
+      for (const { row: r, col: c } of placementOrder) {
+        if (occupied.has(cellKey(r, c))) continue;
+
+        const dirs = biasedDirections(r, c, rows, cols, rand);
 
         for (const dir of dirs) {
           const maxLen = maxPathLen(id, rows, cols, special);
           const minLen = minPathLen(id, special);
           let cells: GridCell[] | null = null;
 
-          for (let len = maxLen; len >= minLen; len--) {
+          for (const len of shuffledLengthRange(minLen, maxLen, rand)) {
             cells = growPath(r, c, dir, len, activeCells, occupied, rand, special);
             if (cells && cells.length >= 2 && !headAlignsWithExit(cells, dir)) {
               cells = null;
@@ -469,7 +531,7 @@ export function generateLevel(id: number): Level {
           }
 
           if (!cells && minLen > 2) {
-            for (let len = Math.min(3, maxLen); len >= 3; len--) {
+            for (const len of shuffledLengthRange(3, Math.min(3, maxLen), rand)) {
               cells = growPath(r, c, dir, len, activeCells, occupied, rand, special);
               if (cells && cells.length >= 2 && !headAlignsWithExit(cells, dir)) {
                 cells = null;
@@ -494,7 +556,15 @@ export function generateLevel(id: number): Level {
               candidate,
               placed,
               activeCells,
-              placementContext(id, rows, cols, placed, candidate)
+              placementContext(
+                id,
+                rows,
+                cols,
+                placed,
+                candidate,
+                activeCells,
+                special
+              )
             )
           ) {
             continue;
@@ -512,14 +582,14 @@ export function generateLevel(id: number): Level {
 
       if (!placedThis) {
         const before = occupied.size;
-        fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand);
+        fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand, special);
         if (occupied.size === before) break;
       }
     }
 
     while (occupied.size < target) {
       const before = occupied.size;
-      fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand);
+      fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand, special);
       if (occupied.size === before) break;
     }
 
@@ -528,6 +598,7 @@ export function generateLevel(id: number): Level {
       if (acceptGeneratedLevel(draft)) return draft;
     }
   }
+
   return buildSolvableFallbackLevel(id, shape, activeCells, special);
 }
 
@@ -549,6 +620,85 @@ function serpentinePath(cells: GridCell[]): GridCell[] {
   return path;
 }
 
+function columnSerpentinePath(cells: GridCell[]): GridCell[] {
+  if (cells.length === 0) return [];
+  const byCol = new Map<number, GridCell[]>();
+  for (const cell of cells) {
+    const col = byCol.get(cell.col) ?? [];
+    col.push(cell);
+    byCol.set(cell.col, col);
+  }
+  const cols = [...byCol.keys()].sort((a, b) => a - b);
+  const path: GridCell[] = [];
+  cols.forEach((col, idx) => {
+    const colCells = byCol.get(col)!.sort((a, b) => a.row - b.row);
+    if (idx % 2 === 1) colCells.reverse();
+    path.push(...colCells);
+  });
+  return path;
+}
+
+function biasedRandomOrder(
+  cells: GridCell[],
+  rand: () => number,
+  rows: number,
+  cols: number
+): GridCell[] {
+  const focusR = rand() * Math.max(1, rows - 1);
+  const focusC = rand() * Math.max(1, cols - 1);
+  const preferNear = rand() < 0.5;
+  return [...cells].sort((a, b) => {
+    const da = Math.hypot(a.row - focusR, a.col - focusC) + rand() * 2.4;
+    const db = Math.hypot(b.row - focusR, b.col - focusC) + rand() * 2.4;
+    return preferNear ? da - db : db - da;
+  });
+}
+
+function pickPlacementOrder(
+  cells: GridCell[],
+  rand: () => number,
+  rows: number,
+  cols: number
+): GridCell[] {
+  const mode = Math.floor(rand() * 6);
+  switch (mode) {
+    case 0:
+      return shuffleArray([...cells], rand);
+    case 1:
+      return serpentinePath(cells);
+    case 2:
+      return [...serpentinePath(cells)].reverse();
+    case 3:
+      return columnSerpentinePath(cells);
+    case 4:
+      return [...columnSerpentinePath(cells)].reverse();
+    default:
+      return biasedRandomOrder(cells, rand, rows, cols);
+  }
+}
+
+function biasedDirections(
+  row: number,
+  col: number,
+  rows: number,
+  cols: number,
+  rand: () => number
+): Direction[] {
+  const dirs: Direction[] = ["up", "down", "left", "right"];
+  if (rand() < 0.42) return shuffleArray([...dirs], rand);
+  const edgeDist = (dir: Direction) => {
+    if (dir === "up") return row;
+    if (dir === "down") return rows - 1 - row;
+    if (dir === "left") return col;
+    return cols - 1 - col;
+  };
+  const preferEdge = rand() < 0.38;
+  return [...dirs].sort(
+    (a, b) =>
+      (preferEdge ? 1 : -1) * (edgeDist(a) - edgeDist(b)) + (rand() - 0.5) * 2.8
+  );
+}
+
 function buildSolvableFallbackLevel(
   id: number,
   shape: ReturnType<typeof getBoardShapeForLevel> | null,
@@ -563,42 +713,39 @@ function buildSolvableFallbackLevel(
     return { row: r, col: c };
   });
 
-  for (let attempt = 0; attempt < 800; attempt++) {
+  for (let attempt = 0; attempt < 80; attempt++) {
     const rand = mulberry32(id * 5003 + attempt);
     const occupied = new Set<string>();
     const placed: ArrowDef[] = [];
-    const order = serpentinePath(playable);
-    if (attempt % 2 === 1) order.reverse();
-    if (attempt % 3 === 2) {
-      for (let i = order.length - 1; i > 0; i--) {
-        const j = Math.floor(rand() * (i + 1));
-        [order[i], order[j]] = [order[j], order[i]];
-      }
-    }
+    const order = pickPlacementOrder(playable, rand, rows, cols);
 
     for (const { row, col } of order) {
       if (occupied.has(cellKey(row, col))) continue;
 
-      const dirs: Direction[] = ["up", "down", "left", "right"];
-      shuffleDirs(dirs, rand);
+      const dirs = biasedDirections(row, col, rows, cols, rand);
       let added = false;
 
       for (const dir of dirs) {
-        const maxLen = Math.min(5, maxPathLen(id, rows, cols, special));
-        for (let len = maxLen; len >= 1; len--) {
-          let cells: GridCell[] | null =
-            len === 1
-              ? [{ row, col }]
-              : growPath(row, col, dir, len, activeCells, occupied, rand, false);
+        const maxLen = maxPathLen(id, rows, cols, special);
+        for (const len of shuffledLengthRange(2, maxLen, rand)) {
+          const cells = growPath(row, col, dir, len, activeCells, occupied, rand, false);
           if (!cells) continue;
-          if (cells.length >= 2 && !headAlignsWithExit(cells, dir)) continue;
+          if (!headAlignsWithExit(cells, dir)) continue;
           const candidate = { cells, direction: dir };
           if (
             !canPlaceArrowWithOthers(
               candidate,
               placed,
               activeCells,
-              placementContext(id, rows, cols, placed, candidate)
+              placementContext(
+                id,
+                rows,
+                cols,
+                placed,
+                candidate,
+                activeCells,
+                special
+              )
             )
           ) {
             continue;
@@ -614,7 +761,7 @@ function buildSolvableFallbackLevel(
 
     while (occupied.size < target) {
       const before = occupied.size;
-      fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand);
+      fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand, special);
       if (occupied.size === before) break;
     }
 
@@ -623,10 +770,11 @@ function buildSolvableFallbackLevel(
     if (acceptGeneratedLevel(draft)) return draft;
   }
 
-  return buildSingleCellSolvableLevel(id, shape, activeCells, special);
+  return buildGuaranteedMultiCellLevel(id, shape, activeCells, special);
 }
 
-function buildSingleCellSolvableLevel(
+/** Deterministic last resort — short snake arrows, not a grid of singles. */
+function buildGuaranteedMultiCellLevel(
   id: number,
   shape: ReturnType<typeof getBoardShapeForLevel> | null,
   activeCells: Set<string>,
@@ -638,38 +786,109 @@ function buildSingleCellSolvableLevel(
     const [r, c] = key.split(",").map(Number);
     return { row: r, col: c };
   });
+  const placed: ArrowDef[] = [];
+  const occupied = new Set<string>();
 
-  for (let attempt = 0; attempt < 1200; attempt++) {
-    const rand = mulberry32(id * 9001 + attempt);
-    const placed: ArrowDef[] = [];
-    const occupied = new Set<string>();
-    const order = serpentinePath(playable);
-    if (attempt % 2 === 1) order.reverse();
-    if (attempt % 5 === 3) {
-      for (let i = order.length - 1; i > 0; i--) {
-        const j = Math.floor(rand() * (i + 1));
-        [order[i], order[j]] = [order[j], order[i]];
-      }
-    }
+  for (let variant = 0; variant < 32; variant++) {
+    placed.length = 0;
+    occupied.clear();
+    const rand = mulberry32(id * 424242 + variant * 7919);
+    const order = pickPlacementOrder(playable, rand, rows, cols);
 
     for (const { row, col } of order) {
-      const single = tryPlaceSingle(id, rows, cols, row, col, placed, activeCells, rand);
-      if (!single) break;
-      occupied.add(cellKey(row, col));
-      placed.push(single);
+      if (occupied.has(cellKey(row, col))) continue;
+
+      const dirs = biasedDirections(row, col, rows, cols, rand);
+
+      let added: ArrowDef | null = null;
+      const maxLen = maxPathLen(id, rows, cols, special);
+      for (const dir of dirs) {
+        for (const len of shuffledLengthRange(2, Math.min(maxLen, 4), rand)) {
+          const cells = growPath(row, col, dir, len, activeCells, occupied, rand, false);
+          if (!cells || !headAlignsWithExit(cells, dir)) continue;
+          const candidate = { cells, direction: dir };
+          added = candidate;
+          break;
+        }
+        if (added) break;
+      }
+
+      if (!added) {
+        added = tryPlaceSingle(
+          id,
+          rows,
+          cols,
+          row,
+          col,
+          placed,
+          activeCells,
+          rand,
+          special
+        );
+      }
+      if (!added) continue;
+
+      for (const cell of added.cells) occupied.add(cellKey(cell.row, cell.col));
+      placed.push(added);
     }
 
-    if (occupied.size !== playable.length) continue;
+    fillRemainingSingles(id, rows, cols, activeCells, occupied, placed, rand, special);
+    if (occupied.size !== activeCells.size) {
+      const partial = levelFromPlaced(id, rows, cols, placed, shape, special);
+      forceFillOutwardSingles(rows, cols, activeCells, occupied, placed, partial);
+    }
+
     const draft = levelFromPlaced(id, rows, cols, placed, shape, special);
     if (acceptGeneratedLevel(draft)) return draft;
+    const repaired = repairDirectionsToSolvable(draft);
+    if (repaired) return repaired;
   }
 
   throw new Error(`Failed to build solvable level ${id}`);
 }
 
 const levelCache = new Map<number, Level>();
-const LEVEL_CACHE_VERSION = 2;
+export const LEVEL_CACHE_VERSION = 22;
 let activeCacheVersion = 0;
+
+// Levels pre-generated at build time (scripts/prebuild-levels.ts). They're
+// deterministic per id, so these are identical to live generation but cost
+// nothing on device — the generator can take many seconds for some special
+// shapes (worst observed: 65s). Only used when the bundle matches the current
+// cache version; otherwise we fall back to generating live. Levels beyond the
+// bundled range are always generated live (and then cached for the session).
+const prebuiltBundle = prebuiltLevelData as unknown as {
+  version: number;
+  maxLevel: number;
+  levels: Record<string, Level>;
+};
+const prebuiltLevels: Map<number, Level> =
+  prebuiltBundle.version === LEVEL_CACHE_VERSION
+    ? new Map(
+        Object.entries(prebuiltBundle.levels).map(([k, v]) => [Number(k), v])
+      )
+    : new Map();
+
+export const PREBUILT_MAX_LEVEL = prebuiltBundle.maxLevel ?? 200;
+
+let persistedLevels = new Map<number, Level>();
+let hydratePromise: Promise<void> | null = null;
+
+/** Load AsyncStorage cache for levels beyond the prebuilt bundle (call once at app start). */
+export function hydrateLevelCache(): Promise<void> {
+  if (!hydratePromise) {
+    hydratePromise = hydratePersistedLevels(
+      LEVEL_CACHE_VERSION,
+      PREBUILT_MAX_LEVEL
+    ).then((map) => {
+      persistedLevels = map;
+      for (const [id, level] of map) {
+        levelCache.set(id, level);
+      }
+    });
+  }
+  return hydratePromise;
+}
 
 export function clearLevelCache(): void {
   levelCache.clear();
@@ -683,7 +902,62 @@ export function getLevel(id: number): Level {
   const key = Math.max(1, id);
   const cached = levelCache.get(key);
   if (cached) return cached;
-  const level = generateLevel(key);
+
+  const prebuilt = prebuiltLevels.get(key);
+  if (prebuilt) {
+    levelCache.set(key, prebuilt);
+    return prebuilt;
+  }
+
+  const persisted = persistedLevels.get(key);
+  if (persisted) {
+    levelCache.set(key, persisted);
+    return persisted;
+  }
+
+  const level = buildLevelFresh(key);
   levelCache.set(key, level);
+  if (key > PREBUILT_MAX_LEVEL) {
+    void persistGeneratedLevel(
+      LEVEL_CACHE_VERSION,
+      PREBUILT_MAX_LEVEL,
+      key,
+      level
+    );
+  }
   return level;
+}
+
+/**
+ * Runs the procedural generator from scratch, bypassing both the session cache
+ * and the prebuilt bundle. Used by the build-time prebuild script so re-running
+ * it always regenerates rather than reading back its own previous output.
+ */
+export function buildLevelFresh(id: number): Level {
+  const key = Math.max(1, id);
+  const shapeBumps = isSpecialShapeLevel(key) ? [0, 13, 29, 41, 57] : [0];
+  let lastError: unknown;
+  for (const bump of shapeBumps) {
+    try {
+      const level = generateLevel(key, bump);
+      if (passesAcceptance(level)) return level;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError instanceof Error) throw lastError;
+  throw new Error(`Failed to build solvable level ${key}`);
+}
+
+/** Pre-generate a level off the critical UI path (e.g. on home screen). */
+export function warmLevel(id: number): void {
+  const key = Math.max(1, id);
+  if (levelCache.has(key)) return;
+  setTimeout(() => {
+    try {
+      getLevel(key);
+    } catch {
+      // generation retries on next getLevel call
+    }
+  }, 0);
 }

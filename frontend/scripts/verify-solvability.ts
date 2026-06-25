@@ -1,4 +1,4 @@
-import { generateLevel, isSpecialShapeLevel } from "../src/levels";
+import { generateLevel } from "../src/levels";
 import {
   findSolveOrder,
   isLevelSolvable,

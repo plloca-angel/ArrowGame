@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { getUtcDateKey } from "./dailyChallenge";
 
 const PROGRESS_KEY = "arrow_escape_progress_v2";
 const SETTINGS_KEY = "arrow_escape_settings_v1";
@@ -32,6 +33,14 @@ export async function loadProgress(): Promise<Progress> {
 
 export async function saveProgress(p: Progress) {
   await AsyncStorage.setItem(PROGRESS_KEY, JSON.stringify(p));
+}
+
+export function isLevelUnlocked(p: Progress, levelId: number): boolean {
+  return levelId >= 1 && levelId <= p.currentLevel;
+}
+
+export function getLevelStars(p: Progress, levelId: number): number {
+  return p.bestByLevel[levelId]?.stars ?? 0;
 }
 
 export async function recordWin(
@@ -158,6 +167,73 @@ export async function consumeHint(): Promise<Entitlements> {
     await saveEntitlements(e);
   }
   return e;
+}
+
+// ---------- Daily challenge ----------
+export type DailyChallengeState = {
+  dateKey: string;
+  completed: boolean;
+  bestMs: number | null;
+  bestMoves: number | null;
+  stars: number;
+};
+
+const DAILY_KEY = "arrow_escape_daily_v1";
+
+function emptyDaily(dateKey: string): DailyChallengeState {
+  return {
+    dateKey,
+    completed: false,
+    bestMs: null,
+    bestMoves: null,
+    stars: 0,
+  };
+}
+
+export async function loadDailyChallenge(
+  date = new Date()
+): Promise<DailyChallengeState> {
+  const todayKey = getUtcDateKey(date);
+  try {
+    const raw = await AsyncStorage.getItem(DAILY_KEY);
+    if (!raw) return emptyDaily(todayKey);
+    const parsed = JSON.parse(raw) as DailyChallengeState;
+    if (parsed.dateKey !== todayKey) return emptyDaily(todayKey);
+    return { ...emptyDaily(todayKey), ...parsed };
+  } catch {
+    return emptyDaily(todayKey);
+  }
+}
+
+export async function recordDailyWin(
+  moves: number,
+  arrowCount: number,
+  elapsedMs: number,
+  date = new Date()
+): Promise<DailyChallengeState> {
+  const todayKey = getUtcDateKey(date);
+  const current = await loadDailyChallenge(date);
+  const stars =
+    moves === arrowCount
+      ? 3
+      : moves <= Math.ceil(arrowCount * 1.15)
+      ? 2
+      : 1;
+  const next: DailyChallengeState = {
+    dateKey: todayKey,
+    completed: true,
+    bestMs:
+      current.bestMs === null
+        ? elapsedMs
+        : Math.min(current.bestMs, elapsedMs),
+    bestMoves:
+      current.bestMoves === null
+        ? moves
+        : Math.min(current.bestMoves, moves),
+    stars: Math.max(current.stars, stars),
+  };
+  await AsyncStorage.setItem(DAILY_KEY, JSON.stringify(next));
+  return next;
 }
 
 // ---------- Device ID ----------

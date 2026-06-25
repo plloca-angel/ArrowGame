@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
-  Pressable,
   Animated,
   Easing,
 } from "react-native";
+import { AppPressable as Pressable } from "./components/AppPressable";
 import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "./SettingsContext";
 import { RADIUS, SPACING } from "./theme";
@@ -77,13 +76,7 @@ export function InterstitialAd({
   const dismissible = remaining === 0;
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={() => {}}
-      testID="interstitial-ad"
-    >
+    <View style={styles.overlay} testID="interstitial-ad">
       <View style={[styles.backdrop, { backgroundColor: colors.bg }]}>
         {/* Top bar */}
         <View style={styles.topBar}>
@@ -135,9 +128,9 @@ export function InterstitialAd({
                 {
                   left: shimmerLeft as unknown as number,
                   backgroundColor: colors.cyanGlow,
+                  pointerEvents: "none",
                 },
               ]}
-              pointerEvents="none"
             />
           )}
           <View style={styles.creativeBody}>
@@ -199,11 +192,16 @@ export function InterstitialAd({
           in the Store to play uninterrupted.
         </Text>
       </View>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1000,
+    elevation: 1000,
+  },
   backdrop: {
     flex: 1,
     paddingHorizontal: SPACING.lg,

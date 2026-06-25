@@ -1041,9 +1041,13 @@ export function isSpecialShapeLevel(levelId: number): boolean {
 }
 
 /** Levels 5, 10, 15 … cycle through all 300 shapes (upscaled for density). */
-export function getBoardShapeForLevel(levelId: number): BoardShape {
+export function getBoardShapeForLevel(levelId: number, bump = 0): BoardShape {
   const slot = Math.floor(levelId / 5) - 1;
-  const index = ((slot % BOARD_SHAPE_COUNT) + BOARD_SHAPE_COUNT) % BOARD_SHAPE_COUNT;
+  const earlyBoost =
+    levelId <= 15 ? 3 : levelId <= 50 ? 7 : 0;
+  const index =
+    (((slot + earlyBoost + bump) % BOARD_SHAPE_COUNT) + BOARD_SHAPE_COUNT) %
+    BOARD_SHAPE_COUNT;
   return prepareSpecialShape(BOARD_SHAPES[index]);
 }
 

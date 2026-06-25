@@ -1,4 +1,4 @@
-import { Direction, DIR_VEC, GridCell } from "./levels";
+import { Direction, DIR_VEC, GridCell } from "./levelModel";
 
 /** One step: head advances in exit direction, body follows along the path. */
 export function snakeStep(cells: GridCell[], direction: Direction): GridCell[] {
@@ -28,14 +28,23 @@ export type SnakeFlightResult =
     }
   | { result: "escape"; steps: number; finalCells: GridCell[] };
 
+export type SnakeFlightOptions = {
+  inBounds?: (r: number, c: number) => boolean;
+  /** When true, in-bounds but non-playable cells block (shape holes). */
+  blockInteriorVoids?: boolean;
+};
+
 export function simulateSnakeFlight(
   startCells: GridCell[],
   direction: Direction,
-  isOnBoard: (r: number, c: number) => boolean,
+  isPlayable: (r: number, c: number) => boolean,
   isOccupied: (r: number, c: number) => boolean,
   escapeExtra = 2,
-  travelLimit = 96
+  travelLimit = 96,
+  options?: SnakeFlightOptions
 ): SnakeFlightResult {
+  const inBounds = options?.inBounds ?? (() => true);
+  const blockInteriorVoids = options?.blockInteriorVoids ?? false;
   let current = startCells.map((c) => ({ ...c }));
   let stepCount = 0;
   const maxSteps = travelLimit + startCells.length + escapeExtra + 32;
@@ -43,17 +52,8 @@ export function simulateSnakeFlight(
   while (stepCount < maxSteps) {
     const next = snakeStep(current, direction);
 
-    const allOut = next.every(({ row, col }) => !isOnBoard(row, col));
-    if (allOut) {
-      return {
-        result: "escape",
-        steps: stepCount + 1 + escapeExtra,
-        finalCells: next,
-      };
-    }
-
     for (const { row, col } of next) {
-      if (isOnBoard(row, col) && isOccupied(row, col)) {
+      if (blockInteriorVoids && inBounds(row, col) && !isPlayable(row, col)) {
         if (stepCount === 0) return { result: "blocked" };
         return {
           result: "collision",
@@ -63,6 +63,25 @@ export function simulateSnakeFlight(
           finalCells: current,
         };
       }
+      if (isPlayable(row, col) && isOccupied(row, col)) {
+        if (stepCount === 0) return { result: "blocked" };
+        return {
+          result: "collision",
+          steps: stepCount,
+          hitRow: row,
+          hitCol: col,
+          finalCells: current,
+        };
+      }
+    }
+
+    const allOut = next.every(({ row, col }) => !isPlayable(row, col));
+    if (allOut) {
+      return {
+        result: "escape",
+        steps: stepCount + 1 + escapeExtra,
+        finalCells: next,
+      };
     }
 
     stepCount++;

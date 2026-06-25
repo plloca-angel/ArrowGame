@@ -112,6 +112,9 @@ Write-Host ""
 
 Remove-Item -Recurse -Force .metro-cache -ErrorAction SilentlyContinue
 
+node ./scripts/ensure-manifest-assets.js
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 if ($Tunnel) {
   npx expo start --clear --port $port --tunnel
 } else {

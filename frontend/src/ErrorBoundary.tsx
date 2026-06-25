@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { AppPressable as Pressable } from "./components/AppPressable";
 
 type Props = { children: ReactNode };
 type State = { error: Error | null };

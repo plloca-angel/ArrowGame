@@ -3,15 +3,13 @@ import {
   View,
   Text,
   StyleSheet,
-  Pressable,
   ScrollView,
   ActivityIndicator,
-  Platform,
 } from "react-native";
+import { AppPressable as Pressable } from "../src/components/AppPressable";
 import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import * as WebBrowser from "expo-web-browser";
 import { useSettings } from "../src/SettingsContext";
 import {
   loadEntitlements,
@@ -22,12 +20,9 @@ import {
   listProducts,
   purchase as iapPurchase,
   pollStatus as iapPollStatus,
-  restorePurchases,
   IAP_BACKEND,
   IapProduct,
 } from "../src/services/iap";
-
-const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL!;
 
 type Product = IapProduct;
 
@@ -138,13 +133,6 @@ export default function StoreScreen() {
         kind: "pending",
       });
     }
-  }
-
-  async function onRestore() {
-    haptic("selection");
-    await restorePurchases();
-    await refreshEnts();
-    setStatusMsg({ text: "Restored.", kind: "success" });
   }
 
   return (
@@ -265,7 +253,7 @@ export default function StoreScreen() {
                 </Text>
                 <Text style={[styles.productDesc, { color: colors.textDim }]}>
                   {p.id === "remove_ads"
-                    ? "One-time purchase · removes the banner ad forever."
+                    ? "One-time purchase · no ads."
                     : "10 hints to peek at the next move when stuck."}
                 </Text>
                 <View style={styles.priceRow}>

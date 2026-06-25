@@ -1,8 +1,15 @@
 // IAP service - NATIVE (iOS + Android) implementation using expo-iap.
 // Metro picks this file automatically on native platforms.
 
-import { Platform } from "react-native";
-import * as ExpoIap from "expo-iap";
+import {
+  fetchProducts,
+  finishTransaction,
+  getAvailablePurchases,
+  initConnection,
+  requestPurchase,
+  type Product,
+  type Purchase,
+} from "expo-iap";
 import { grantPurchase } from "../storage";
 
 // === Store product IDs ============================================
@@ -39,6 +46,24 @@ export type IapProduct = {
   storeId?: string;
 };
 
+function applyLiveStorePrice(
+  target: IapProduct,
+  live: Pick<Product, "price" | "currency" | "title">
+): void {
+  if (typeof live.price === "number" && !Number.isNaN(live.price)) {
+    target.amount = live.price;
+  }
+  if (live.currency) target.currency = live.currency;
+  if (live.title) target.name = live.title;
+}
+
+function asPurchase(
+  result: Purchase | Purchase[] | null
+): Purchase | null {
+  if (!result) return null;
+  return Array.isArray(result) ? (result[0] ?? null) : result;
+}
+
 export async function listProducts(): Promise<IapProduct[]> {
   // 1) Get canonical product metadata from our backend
   const res = await fetch(`${BACKEND}/api/products`);
@@ -54,19 +79,14 @@ export async function listProducts(): Promise<IapProduct[]> {
 
   // 3) Best-effort: connect to the store + fetch real prices
   try {
-    await ExpoIap.initConnection();
+    await initConnection();
     const ids = annotated.map((p) => p.storeId!);
-    const storeProducts = await ExpoIap.getProducts(ids);
-    // Replace amount/currency with the live store price if available
+    const storeProducts = await fetchProducts({ skus: ids, type: "in-app" });
+    if (!storeProducts) return annotated;
+
     for (const p of annotated) {
-      const live = storeProducts.find((s: any) => s.id === p.storeId);
-      if (live) {
-        // expo-iap exposes localizedPrice/price + currency
-        const priceNum = parseFloat((live as any).price ?? "");
-        if (!Number.isNaN(priceNum)) p.amount = priceNum;
-        if ((live as any).currency) p.currency = (live as any).currency;
-        if ((live as any).title) p.name = (live as any).title;
-      }
+      const live = storeProducts.find((s) => s.id === p.storeId);
+      if (live) applyLiveStorePrice(p, live);
     }
   } catch {
     // ignore - fall back to backend prices
@@ -81,23 +101,22 @@ export async function purchase(product: IapProduct): Promise<{
   error?: string;
 }> {
   try {
-    await ExpoIap.initConnection();
+    await initConnection();
     const sku = product.storeId ?? product.id;
-    // requestPurchase API differs slightly per platform; both supported.
-    const result: any = await (ExpoIap as any).requestPurchase({
-      sku,
-      skus: [sku],
-    });
+    const result = asPurchase(
+      await requestPurchase({
+        type: "in-app",
+        request: {
+          apple: { sku },
+          google: { skus: [sku] },
+        },
+      })
+    );
 
-    // Receipt + verification:
-    // expo-iap returns a Purchase object with platform-specific receipt data.
-    // For a complete production setup you would send the receipt to your
-    // backend for server-side verification before granting entitlements.
-    // Until then, we trust the local store result (good enough for launch).
     const purchaseId: string =
-      result?.transactionId ??
+      result?.id ??
       result?.purchaseToken ??
-      result?.orderId ??
+      result?.productId ??
       `local-${Date.now()}`;
 
     const localId =
@@ -105,10 +124,9 @@ export async function purchase(product: IapProduct): Promise<{
 
     await grantPurchase(purchaseId, localId);
 
-    // Finalize the transaction so the store doesn't keep retrying it.
     if (result) {
       try {
-        await (ExpoIap as any).finishTransaction({
+        await finishTransaction({
           purchase: result,
           isConsumable: product.kind === "consumable",
         });
@@ -118,8 +136,8 @@ export async function purchase(product: IapProduct): Promise<{
     }
 
     return { success: true, sessionId: purchaseId };
-  } catch (e: any) {
-    const msg = String(e?.message ?? e ?? "purchase failed");
+  } catch (e: unknown) {
+    const msg = String(e instanceof Error ? e.message : e ?? "purchase failed");
     if (/user cancelled|cancel/i.test(msg)) {
       return { success: false, error: "Cancelled" };
     }
@@ -137,14 +155,13 @@ export async function pollStatus(_sessionId: string): Promise<{
 
 export async function restorePurchases() {
   try {
-    await ExpoIap.initConnection();
-    const purchases: any[] = await (ExpoIap as any).getAvailablePurchases();
+    await initConnection();
+    const purchases = await getAvailablePurchases();
     for (const p of purchases) {
-      const sku = p.productId ?? p.sku;
+      const sku = p.productId;
       const localId = PLATFORM_TO_LOCAL[sku];
       if (!localId) continue;
-      const txId =
-        p.transactionId ?? p.purchaseToken ?? p.orderId ?? `restore-${sku}`;
+      const txId = p.id ?? p.purchaseToken ?? `restore-${sku}`;
       await grantPurchase(txId, localId);
     }
   } catch {

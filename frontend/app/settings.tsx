@@ -3,16 +3,16 @@ import {
   View,
   Text,
   StyleSheet,
-  Pressable,
   ScrollView,
   Switch,
   Alert,
 } from "react-native";
+import { AppPressable as Pressable } from "../src/components/AppPressable";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "../src/SettingsContext";
-import { resetProgress, Settings as SettingsType } from "../src/storage";
+import { resetProgress } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
 
 export default function SettingsScreen() {

@@ -8,12 +8,19 @@
     "start:tunnel": "powershell -ExecutionPolicy Bypass -File ./scripts/start-tunnel.ps1",
     "firewall": "powershell -ExecutionPolicy Bypass -File ./scripts/allow-expo-firewall.ps1",
     "diagnose": "powershell -ExecutionPolicy Bypass -File ./scripts/diagnose-expo-network.ps1",
-    "start:plain": "expo start",
+    "start:plain": "powershell -ExecutionPolicy Bypass -File ./scripts/start-plain.ps1",
     "reset-project": "node ./scripts/reset-project.js",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "typecheck": "tsc --noEmit",
+    "verify:levels": "tsx scripts/verify-all-levels.ts 300 25",
+    "verify:level": "tsx scripts/audit-level.ts",
+    "prebuild:levels": "tsx scripts/prebuild-levels.ts 200",
+    "prebuild:android": "powershell -ExecutionPolicy Bypass -File ./scripts/prebuild-android.ps1",
+    "build:apk:local": "powershell -ExecutionPolicy Bypass -File ./scripts/build-apk.ps1 -Variant debug",
+    "build:apk:cloud": "powershell -ExecutionPolicy Bypass -File ./scripts/build-apk-cloud.ps1"
   },
   "dependencies": {
     "@babel/runtime": "^7.20.6",
@@ -59,8 +66,10 @@
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@types/react": "~19.1.0",
+    "babel-preset-expo": "~54.0.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "tsx": "^4.20.3",
     "typescript": "~5.9.3"
   },
   "private": true,

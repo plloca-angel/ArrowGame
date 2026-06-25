@@ -36,7 +36,19 @@ const nativeAdsBuild =
   process.env.EXPO_PUBLIC_NATIVE_ADS_BUILD === "true" ||
   process.env.EXPO_PUBLIC_NATIVE_ADS_BUILD === "1";
 
-const basePlugins = appJson.expo.plugins || [];
+const basePlugins = (appJson.expo.plugins || []).filter((plugin) => {
+  const name = Array.isArray(plugin) ? plugin[0] : plugin;
+  if (name !== "expo-iap") return true;
+  try {
+    require.resolve("expo-iap");
+    return true;
+  } catch {
+    console.warn(
+      "[app.config] Skipping expo-iap plugin — package not installed (Expo Go / web dev still works)."
+    );
+    return false;
+  }
+});
 
 const adPlugins = nativeAdsBuild
   ? [
@@ -58,8 +70,8 @@ module.exports = {
   expo: {
     ...appJson.expo,
     name: "Arrow Escape",
-    slug: "frontend",
-    scheme: "frontend",
+    slug: "arrow-escape",
+    scheme: "arrowescape",
     updates: {
       enabled: false,
       checkAutomatically: "NEVER",
@@ -75,6 +87,7 @@ module.exports = {
     android: {
       ...appJson.expo.android,
       package: "com.arrowescape.app",
+      versionCode: 1,
     },
     plugins: [...basePlugins, ...adPlugins],
     extra: {

@@ -1,14 +1,21 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+} from "react";
 import {
   View,
   Text,
   StyleSheet,
-  Pressable,
   Animated,
   Easing,
   Dimensions,
-  Modal,
+  ActivityIndicator,
 } from "react-native";
+import { AppPressable as Pressable } from "../src/components/AppPressable";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -19,19 +26,30 @@ import {
   loadEntitlements,
   consumeHint,
   skipLevel,
+  recordDailyWin,
   Entitlements,
 } from "../src/storage";
+import {
+  formatDailyDateLabel,
+  getDailyChallengeLevelId,
+} from "../src/dailyChallenge";
 import { RADIUS, SPACING } from "../src/theme";
 import { AdBanner } from "../src/AdBanner";
 import { presentInterstitialAd } from "../src/ads/interstitial";
 import { NeonPathArrow, getNeonTrace, pathHitBox } from "../src/components/NeonPathArrow";
 import {
+  MovingArrowSprite,
+  type SlideSpec,
+} from "../src/components/MovingArrowSprite";
+import {
   buildMovementTrack,
-  buildSnakeStepSequence,
-  extractSnakePolyline,
-  simulateSnakeFlight,
-  SnakeFlightResult,
 } from "../src/arrowMotion";
+import {
+  findSafeEscapeFromStates,
+  isArrowBoardSolvable,
+  levelHasMisleadingMoves,
+} from "../src/levelSolvability";
+import { computeLiveFlight, toLiveArrow } from "../src/gameBoard";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -47,10 +65,9 @@ type ArrowState = {
   hintPulse: Animated.Value;
 };
 
-type GameStatus = "playing" | "won" | "lost";
+type GameStatus = "playing" | "won" | "stuck";
 
-const STEP_MS = 88;
-const ESCAPE_EXTRA_CELLS = 2;
+const STEP_MS = 135;
 
 const ARROW_GLOW = {
   hint: { color: "#f8ff5c", glow: "rgba(248, 255, 92, 0.55)" },
@@ -58,15 +75,131 @@ const ARROW_GLOW = {
   escaped: { color: "#39ff88", glow: "rgba(57, 255, 136, 0.45)" },
 };
 
+function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+type BoardArrowViewProps = {
+  visualCells: GridCell[];
+  direction: Direction;
+  status: ArrowStatus;
+  colorIndex: number;
+  fade: Animated.Value;
+  rotateShake: Animated.Value;
+  isHinted: boolean;
+  cellSize: number;
+  boardPad: number;
+  colorBlindSafe: boolean;
+  largeArrows: boolean;
+};
+
+/**
+ * One arrow's wrapper + SVG. Memoized so that while a single arrow is sliding,
+ * the other (stationary) arrows don't recompute their hit box or reconcile their
+ * Animated.View every frame — only the moving arrow, whose visualCells array
+ * changes identity each frame, re-renders. This keeps releases smooth even on
+ * large boards with many arrows.
+ */
+const BoardArrowView = memo(function BoardArrowView({
+  visualCells,
+  direction,
+  status,
+  colorIndex,
+  fade,
+  rotateShake,
+  isHinted,
+  cellSize,
+  boardPad,
+  colorBlindSafe,
+  largeArrows,
+}: BoardArrowViewProps) {
+  const rotation = rotateShake.interpolate({
+    inputRange: [-1, 0, 1],
+    outputRange: ["-12deg", "0deg", "12deg"],
+  });
+  const trace =
+    status === "broken"
+      ? ARROW_GLOW.broken
+      : status === "escaped"
+      ? ARROW_GLOW.escaped
+      : isHinted
+      ? ARROW_GLOW.hint
+      : getNeonTrace(colorIndex, colorBlindSafe);
+  const hit = pathHitBox(visualCells, cellSize, boardPad, direction);
+
+  return (
+    <Animated.View
+      style={[
+        styles.arrowPathWrap,
+        {
+          left: hit.left,
+          top: hit.top,
+          width: hit.width,
+          height: hit.height,
+          transform: [{ rotate: rotation }],
+          opacity: fade,
+          pointerEvents: "none",
+        },
+      ]}
+    >
+      <NeonPathArrow
+        cells={visualCells}
+        direction={direction}
+        cellSize={cellSize}
+        boardPad={boardPad}
+        color={trace.color}
+        glow={trace.glow}
+        dimmed={status === "escaped" || status === "broken"}
+        largeArrows={largeArrows}
+      />
+    </Animated.View>
+  );
+});
+
+type ActiveSlide = SlideSpec & { motionToken: number };
+
 export default function Game() {
-  const { level: levelParam } = useLocalSearchParams<{ level?: string }>();
+  const { level: levelParam, mode: modeParam } = useLocalSearchParams<{
+    level?: string;
+    mode?: string;
+  }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { colors, haptic, settings } = useSettings();
 
-  const levelId = Math.max(1, parseInt(levelParam || "1", 10) || 1);
-  const level: Level = useMemo(() => getLevel(levelId), [levelId]);
-  const activeCellSet = useMemo(() => getLevelActiveCellSet(level), [level]);
+  const isDailyMode = modeParam === "daily";
+  const levelId = isDailyMode
+    ? getDailyChallengeLevelId()
+    : Math.max(1, parseInt(levelParam || "1", 10) || 1);
+  const [level, setLevel] = useState<Level | null>(null);
+  const levelRef = useRef<Level | null>(null);
+
+  useEffect(() => {
+    levelRef.current = level;
+    levelHasTrapsRef.current = level ? levelHasMisleadingMoves(level) : false;
+  }, [level]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLevel(null);
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      const loaded = getLevel(levelId);
+      if (!cancelled) setLevel(loaded);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [levelId]);
+
+  const activeCellSet = useMemo(
+    () => (level ? getLevelActiveCellSet(level) : new Set<string>()),
+    [level]
+  );
 
   // Board area: size cells from both width and height so the grid stays centered as levels grow
   const [boardSpace, setBoardSpace] = useState({ w: 0, h: 0 });
@@ -77,13 +210,18 @@ export default function Game() {
       : Math.min(win.width - SPACING.md * 2, win.width - 32);
   const layoutH =
     boardSpace.h > 0 ? boardSpace.h : Math.max(160, win.height * 0.36);
-  const cellFromW = Math.floor(layoutW / (level.cols + (level.isSpecialShape ? 2 : 3)));
-  const cellFromH = Math.floor(layoutH / (level.rows + (level.isSpecialShape ? 2 : 3)));
-  const minCell = level.isSpecialShape ? 14 : 24;
-  const cellSize = Math.max(minCell, Math.min(cellFromW, cellFromH));
-  const boardW = cellSize * level.cols;
-  const boardH = cellSize * level.rows;
-  const boardPad = Math.ceil(cellSize * (level.isSpecialShape ? 1.6 : 2));
+  const cellFromW = Math.floor(layoutW / ((level?.cols ?? 3) + (level?.isSpecialShape ? 2 : 3)));
+  const cellFromH = Math.floor(layoutH / ((level?.rows ?? 3) + (level?.isSpecialShape ? 2 : 3)));
+  const arrowScale = settings.largeArrows ? 1.22 : 1;
+  const baseMin = level?.isSpecialShape ? 14 : 24;
+  const minCell = Math.round(baseMin * arrowScale);
+  const cellSize = Math.max(
+    minCell,
+    Math.floor(Math.min(cellFromW, cellFromH) * arrowScale)
+  );
+  const boardW = cellSize * (level?.cols ?? 3);
+  const boardH = cellSize * (level?.rows ?? 3);
+  const boardPad = Math.ceil(cellSize * (level?.isSpecialShape ? 1.6 : 2));
   const canvasW = boardW + boardPad * 2;
   const canvasH = boardH + boardPad * 2;
 
@@ -93,9 +231,57 @@ export default function Game() {
   const statusRef = useRef<GameStatus>("playing");
   const [moves, setMoves] = useState(0);
   const movesRef = useRef(0);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const elapsedMsRef = useRef(0);
   const [resetSignal, setResetSignal] = useState(0);
   const [ents, setEnts] = useState<Entitlements | null>(null);
   const [hintHighlight, setHintHighlight] = useState<string | null>(null);
+  const activeMovesRef = useRef(0);
+  const firingIdsRef = useRef<Set<string>>(new Set());
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const levelHasTrapsRef = useRef(false);
+  const motionTokenRef = useRef(0);
+  const activeAnimationsRef = useRef<Animated.CompositeAnimation[]>([]);
+  const slidingIdsRef = useRef<Set<string>>(new Set());
+  const slideResolversRef = useRef<Map<string, () => void>>(new Map());
+  const [activeSlides, setActiveSlides] = useState<ActiveSlide[]>([]);
+  const activeSlidesRef = useRef<ActiveSlide[]>([]);
+
+  useEffect(() => {
+    activeSlidesRef.current = activeSlides;
+  }, [activeSlides]);
+
+  const getMotionToken = useCallback(() => motionTokenRef.current, []);
+
+  const invalidateMotion = () => {
+    motionTokenRef.current += 1;
+    for (const anim of activeAnimationsRef.current) {
+      anim.stop();
+    }
+    activeAnimationsRef.current = [];
+    slidingIdsRef.current.clear();
+    for (const resolve of slideResolversRef.current.values()) {
+      resolve();
+    }
+    slideResolversRef.current.clear();
+    setActiveSlides([]);
+  };
+
+  const trackAnimation = (anim: Animated.CompositeAnimation) => {
+    activeAnimationsRef.current.push(anim);
+    return anim;
+  };
+
+  const applyArrowsUpdate = (
+    updater: (prev: ArrowState[]) => ArrowState[]
+  ): ArrowState[] => {
+    // Compute synchronously from the ref (always the latest state) so callers
+    // like checkWin see up-to-date statuses immediately, not on the next render.
+    const computed = updater(arrowsRef.current);
+    arrowsRef.current = computed;
+    setArrows(computed);
+    return computed;
+  };
 
   useEffect(() => {
     loadEntitlements().then(setEnts);
@@ -113,6 +299,7 @@ export default function Game() {
 
   // Initialize arrows from level
   useEffect(() => {
+    if (!level) return;
     const init: ArrowState[] = level.arrows.map((a, idx) => ({
       id: `${level.id}-${idx}`,
       cells: a.cells.map((c) => ({ ...c })),
@@ -130,39 +317,64 @@ export default function Game() {
     statusRef.current = "playing";
     setMoves(0);
     movesRef.current = 0;
+    setElapsedMs(0);
+    elapsedMsRef.current = 0;
     setHintHighlight(null);
-  }, [level, cellSize, resetSignal]);
+    activeMovesRef.current = 0;
+    firingIdsRef.current = new Set();
+    invalidateMotion();
+    if (settleTimerRef.current) {
+      clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+  }, [level, resetSignal]);
 
-  const isCellOccupied = useCallback(
-    (r: number, c: number, list: ArrowState[], excludeId?: string) => {
-      for (const a of list) {
-        if (a.id === excludeId || a.status === "escaped") continue;
-        for (const cell of a.cells) {
-          if (cell.row === r && cell.col === c) return true;
-        }
+  useEffect(() => {
+    if (status !== "playing") return;
+    const startedAt = Date.now();
+    const id = setInterval(() => {
+      const next = Date.now() - startedAt;
+      elapsedMsRef.current = next;
+      setElapsedMs(next);
+    }, 250);
+    return () => clearInterval(id);
+  }, [status, level, resetSignal]);
+
+  const handleSlideFrame = useCallback(
+    (id: string, visual: GridCell[], logical: GridCell[]) => {
+      const a = arrowsRef.current.find((x) => x.id === id);
+      if (a) {
+        a.cells = logical;
+        a.visualCells = visual;
       }
-      return false;
     },
     []
   );
 
-  const computeFlight = useCallback(
-    (arrow: ArrowState, list: ArrowState[]): SnakeFlightResult => {
-      const escapeExtra = Math.max(
-        ESCAPE_EXTRA_CELLS,
-        Math.ceil(arrow.cells.length * 0.75)
+  const handleSlideComplete = useCallback(
+    (id: string, finalCells: GridCell[], finalVisual: GridCell[]) => {
+      slidingIdsRef.current.delete(id);
+      setActiveSlides((prev) => prev.filter((s) => s.id !== id));
+      // Always merge from arrowsRef — React's `prev` can be stale when several
+      // arrows finish quickly and overwrite another arrow's escaped status.
+      const next = arrowsRef.current.map((a) =>
+        a.id === id
+          ? {
+              ...a,
+              cells: finalCells.map((c) => ({ ...c })),
+              visualCells: finalVisual.map((c) => ({ ...c })),
+            }
+          : a
       );
-      const onBoard = (r: number, c: number) => activeCellSet.has(cellKey(r, c));
-      return simulateSnakeFlight(
-        arrow.cells,
-        arrow.direction,
-        onBoard,
-        (r, c) => isCellOccupied(r, c, list, arrow.id),
-        escapeExtra,
-        level.rows + level.cols
-      );
+      arrowsRef.current = next;
+      setArrows(next);
+      const resolve = slideResolversRef.current.get(id);
+      if (resolve) {
+        slideResolversRef.current.delete(id);
+        resolve();
+      }
     },
-    [level, isCellOccupied, activeCellSet]
+    []
   );
 
   const animateSnakeAlongPath = async (
@@ -170,66 +382,46 @@ export default function Game() {
     startCells: GridCell[],
     direction: Direction,
     totalSteps: number,
-    reducedMotion: boolean
+    colorIndex: number,
+    reducedMotion: boolean,
+    motionToken: number
   ) => {
+    if (motionToken !== motionTokenRef.current) return;
+
     const track = buildMovementTrack(startCells, direction, totalSteps);
-    const sequence = buildSnakeStepSequence(startCells, direction, totalSteps);
-    const segmentCount = startCells.length;
-    const stepDuration = reducedMotion ? 36 : STEP_MS;
-    const progress = new Animated.Value(0);
 
-    const discreteCellsAt = (value: number) => {
-      if (value < 1) return startCells.map((c) => ({ ...c }));
-      const idx = Math.min(Math.floor(value) - 1, sequence.length - 1);
-      return sequence[idx].map((c) => ({ ...c }));
-    };
-
-    await new Promise<void>((resolve) => {
-      const listenerId = progress.addListener(({ value }) => {
-        const visual = extractSnakePolyline(track, value, segmentCount);
-        const cells = discreteCellsAt(value);
-        const updated = arrowsRef.current.map((a) =>
-          a.id === arrowId ? { ...a, visualCells: visual, cells } : a
-        );
-        arrowsRef.current = updated;
-        setArrows(updated);
-      });
-
-      Animated.timing(progress, {
-        toValue: totalSteps,
-        duration: stepDuration * totalSteps,
-        easing: Easing.linear,
-        useNativeDriver: false,
-      }).start(() => {
-        progress.removeListener(listenerId);
-        const finalCells = sequence[sequence.length - 1] ?? startCells;
-        const snapped = arrowsRef.current.map((a) =>
-          a.id === arrowId
-            ? {
-                ...a,
-                cells: finalCells.map((c) => ({ ...c })),
-                visualCells: finalCells.map((c) => ({ ...c })),
-              }
-            : a
-        );
-        arrowsRef.current = snapped;
-        setArrows(snapped);
-        resolve();
-      });
+    return new Promise<void>((resolve) => {
+      slidingIdsRef.current.add(arrowId);
+      slideResolversRef.current.set(arrowId, resolve);
+      setActiveSlides((prev) => [
+        ...prev,
+        {
+          id: arrowId,
+          startCells: startCells.map((c) => ({ ...c })),
+          direction,
+          track,
+          totalSteps,
+          segmentCount: startCells.length,
+          colorIndex,
+          stepDurationMs: reducedMotion ? 36 : STEP_MS,
+          motionToken,
+        },
+      ]);
     });
   };
 
-  const fireArrowById = useCallback(
-    (arrowId: string) => {
-      const arrow = arrowsRef.current.find((a) => a.id === arrowId);
-      if (arrow) fireArrow(arrow);
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status]
+  const idleArrowIds = useMemo(
+    () => new Set(arrows.filter((a) => a.status === "idle").map((a) => a.id)),
+    [arrows]
   );
 
   const cellTapTargets = useMemo(() => {
-    const targets: { row: number; col: number; arrowId: string }[] = [];
+    const targets: {
+      row: number;
+      col: number;
+      arrowId: string;
+      direction: Direction;
+    }[] = [];
     const seen = new Set<string>();
     for (const a of arrows) {
       if (a.status !== "idle") continue;
@@ -237,41 +429,115 @@ export default function Game() {
         const key = `${cell.row},${cell.col}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        targets.push({ row: cell.row, col: cell.col, arrowId: a.id });
+        targets.push({
+          row: cell.row,
+          col: cell.col,
+          arrowId: a.id,
+          direction: a.direction,
+        });
       }
     }
     return targets;
   }, [arrows]);
 
-  const shakeAnim = (rotateShake: Animated.Value, reducedMotion: boolean) =>
+  const directionLabel: Record<Direction, string> = {
+    up: "up",
+    down: "down",
+    left: "left",
+    right: "right",
+  };
+
+  const shakeAnim = (
+    rotateShake: Animated.Value,
+    reducedMotion: boolean,
+    motionToken: number
+  ) =>
     new Promise<void>((resolve) => {
-      if (reducedMotion) {
+      if (reducedMotion || motionToken !== motionTokenRef.current) {
         resolve();
         return;
       }
-      Animated.sequence([
-        Animated.timing(rotateShake, {
-          toValue: 1,
-          duration: 45,
-          useNativeDriver: true,
-        }),
-        Animated.timing(rotateShake, {
-          toValue: -1,
-          duration: 45,
-          useNativeDriver: true,
-        }),
-        Animated.timing(rotateShake, {
-          toValue: 0.6,
-          duration: 40,
-          useNativeDriver: true,
-        }),
-        Animated.timing(rotateShake, {
-          toValue: 0,
-          duration: 40,
-          useNativeDriver: true,
-        }),
-      ]).start(() => resolve());
+      trackAnimation(
+        Animated.sequence([
+          Animated.timing(rotateShake, {
+            toValue: 1,
+            duration: 45,
+            useNativeDriver: true,
+          }),
+          Animated.timing(rotateShake, {
+            toValue: -1,
+            duration: 45,
+            useNativeDriver: true,
+          }),
+          Animated.timing(rotateShake, {
+            toValue: 0.6,
+            duration: 40,
+            useNativeDriver: true,
+          }),
+          Animated.timing(rotateShake, {
+            toValue: 0,
+            duration: 40,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start(() => resolve());
     });
+
+  const triggerGameOver = () => {
+    activeMovesRef.current = 0;
+    firingIdsRef.current = new Set();
+    if (settleTimerRef.current) {
+      clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+    setStatus("stuck");
+    statusRef.current = "stuck";
+    haptic("warning");
+  };
+
+  const hasActiveAnimation = () =>
+    activeMovesRef.current > 0 ||
+    activeSlidesRef.current.length > 0 ||
+    slidingIdsRef.current.size > 0;
+
+  const checkStuck = (list: ArrowState[]): boolean => {
+    if (!levelHasTrapsRef.current) return false;
+    const lv = levelRef.current;
+    if (!lv) return false;
+    if (hasActiveAnimation()) return false;
+    if (list.some((a) => a.status === "flying")) return false;
+    const remaining = list.filter((a) => a.status === "idle");
+    if (remaining.length === 0) return false;
+    if (isArrowBoardSolvable(lv, list)) return false;
+    triggerGameOver();
+    return true;
+  };
+
+  const scheduleBoardSettle = () => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = setTimeout(() => {
+      settleTimerRef.current = null;
+      if (statusRef.current !== "playing") return;
+      if (activeMovesRef.current === 0) {
+        tryFinalizeBoard();
+      }
+      if (hasActiveAnimation()) return;
+      checkStuck(arrowsRef.current);
+    }, 60);
+  };
+
+  const fireArrowById = (arrowId: string) => {
+    if (statusRef.current !== "playing") return;
+    if (firingIdsRef.current.has(arrowId)) return;
+    const arrow = arrowsRef.current.find(
+      (a) => a.id === arrowId && a.status === "idle"
+    );
+    if (!arrow) return;
+    firingIdsRef.current.add(arrowId);
+    void executeFireArrow(arrow).finally(() => {
+      firingIdsRef.current.delete(arrowId);
+    });
+  };
 
   const bumpMoves = () => {
     setMoves((m) => {
@@ -284,120 +550,255 @@ export default function Game() {
   const checkWin = (list: ArrowState[]) => {
     const allOut = list.every((a) => a.status === "escaped");
     if (allOut) {
+      activeMovesRef.current = 0;
+      firingIdsRef.current = new Set();
+      if (settleTimerRef.current) {
+        clearTimeout(settleTimerRef.current);
+        settleTimerRef.current = null;
+      }
       setStatus("won");
       statusRef.current = "won";
-      recordWin(levelId, movesRef.current, list.length).catch(() => {});
+      if (isDailyMode) {
+        recordDailyWin(
+          movesRef.current,
+          list.length,
+          elapsedMsRef.current
+        ).catch(() => {});
+      } else {
+        recordWin(levelId, movesRef.current, list.length).catch(() => {});
+      }
     }
   };
 
-  const fireArrow = async (arrow: ArrowState) => {
+  /** Mark one arrow escaped and re-check win (idempotent). */
+  const finalizeEscape = (arrowId: string, motionToken: number) => {
     if (statusRef.current !== "playing") return;
-    const live = arrowsRef.current.find((a) => a.id === arrow.id);
-    if (!live || live.status !== "idle") return;
+    if (motionToken !== motionTokenRef.current) return;
+    const updated = applyArrowsUpdate((prev) =>
+      prev.map((a) =>
+        a.id === arrowId && a.status !== "escaped"
+          ? { ...a, status: "escaped" as ArrowStatus }
+          : a
+      )
+    );
+    checkWin(updated);
+  };
+
+  /**
+   * When the board is idle, catch missed win detection — e.g. fast multi-tap
+   * races that left the last arrow stuck as invisible "flying" after fade.
+   */
+  const tryFinalizeBoard = () => {
+    if (statusRef.current !== "playing") return;
+    if (activeMovesRef.current > 0) return;
+    if (activeSlidesRef.current.length > 0) return;
+    if (slidingIdsRef.current.size > 0) return;
+
+    let list = arrowsRef.current;
+    const flying = list.filter((a) => a.status === "flying");
+    const escaped = list.filter((a) => a.status === "escaped").length;
+
+    if (
+      flying.length > 0 &&
+      escaped + flying.length === list.length &&
+      list.length > 0
+    ) {
+      list = applyArrowsUpdate((prev) =>
+        prev.map((a) =>
+          a.status === "flying" ? { ...a, status: "escaped" as ArrowStatus } : a
+        )
+      );
+    }
+
+    if (list.length > 0 && list.every((a) => a.status === "escaped")) {
+      checkWin(list);
+    }
+  };
+
+  const executeFireArrow = async (arrow: ArrowState) => {
+    if (statusRef.current !== "playing") return;
+    const motionToken = motionTokenRef.current;
+
+    const idx = arrowsRef.current.findIndex(
+      (a) => a.id === arrow.id && a.status === "idle"
+    );
+    if (idx < 0) return;
+
+    const lv = levelRef.current;
+    if (!lv) return;
+
+    const idleArrow = arrowsRef.current[idx];
+    const startCells = idleArrow.cells.map((c) => ({ ...c }));
+    const liveBoard = arrowsRef.current.map(toLiveArrow);
+    const flight = computeLiveFlight(
+      toLiveArrow(idleArrow),
+      liveBoard,
+      lv
+    );
+
+    const isWrongMove =
+      flight.result === "blocked" || flight.result === "collision";
+
+    const claimIdx = arrowsRef.current.findIndex(
+      (a) => a.id === arrow.id && a.status === "idle"
+    );
+    if (claimIdx < 0) return;
+
+    if (isWrongMove) {
+      bumpMoves();
+      haptic("error");
+      activeMovesRef.current += 1;
+      setHintHighlight(null);
+
+      const live: ArrowState = {
+        ...idleArrow,
+        status: "flying",
+      };
+      applyArrowsUpdate((prev) =>
+        prev.map((a, i) => (i === claimIdx ? live : a))
+      );
+
+      try {
+        if (flight.result === "collision" && flight.steps > 0) {
+          await animateSnakeAlongPath(
+            live.id,
+            startCells,
+            live.direction,
+            flight.steps,
+            live.colorIndex,
+            settings.reducedMotion,
+            motionToken
+          );
+        }
+        if (motionToken !== motionTokenRef.current) {
+          applyArrowsUpdate((prev) =>
+            prev.map((a) =>
+              a.id === live.id && a.status === "flying"
+                ? {
+                    ...a,
+                    status: "idle" as ArrowStatus,
+                    cells: startCells.map((c) => ({ ...c })),
+                    visualCells: startCells.map((c) => ({ ...c })),
+                  }
+                : a
+            )
+          );
+          return;
+        }
+        await shakeAnim(live.rotateShake, settings.reducedMotion, motionToken);
+        if (motionToken !== motionTokenRef.current) {
+          applyArrowsUpdate((prev) =>
+            prev.map((a) =>
+              a.id === live.id && a.status === "flying"
+                ? {
+                    ...a,
+                    status: "idle" as ArrowStatus,
+                    cells: startCells.map((c) => ({ ...c })),
+                    visualCells: startCells.map((c) => ({ ...c })),
+                  }
+                : a
+            )
+          );
+          return;
+        }
+        applyArrowsUpdate((prev) =>
+          prev.map((a) =>
+            a.id === live.id ? { ...a, status: "broken" as ArrowStatus } : a
+          )
+        );
+        triggerGameOver();
+      } finally {
+        activeMovesRef.current = Math.max(0, activeMovesRef.current - 1);
+        scheduleBoardSettle();
+      }
+      return;
+    }
+
+    bumpMoves();
+    haptic("light");
+    activeMovesRef.current += 1;
+
+    const live: ArrowState = {
+      ...idleArrow,
+      status: "flying",
+    };
+    applyArrowsUpdate((prev) =>
+      prev.map((a, i) => (i === claimIdx ? live : a))
+    );
     setHintHighlight(null);
 
-    const flight = computeFlight(live, arrowsRef.current);
-    const startCells = live.cells.map((c) => ({ ...c }));
+    let escapeNeedsFinalize = true;
+    try {
+      if (flight.result === "escape") {
+        await animateSnakeAlongPath(
+          live.id,
+          startCells,
+          live.direction,
+          flight.steps,
+          live.colorIndex,
+          settings.reducedMotion,
+          motionToken
+        );
+        if (
+          statusRef.current !== "playing" ||
+          motionToken !== motionTokenRef.current
+        ) {
+          escapeNeedsFinalize = false;
+          return;
+        }
 
-    const setFlying = () => {
-      const next = arrowsRef.current.map((a) =>
-        a.id === live.id ? { ...a, status: "flying" as ArrowStatus } : a
-      );
-      arrowsRef.current = next;
-      setArrows(next);
-    };
+        haptic("success");
+        await new Promise<void>((resolve) => {
+          trackAnimation(
+            Animated.timing(live.fade, {
+              toValue: 0,
+              duration: settings.reducedMotion ? 80 : 240,
+              easing: Easing.out(Easing.cubic),
+              useNativeDriver: true,
+            })
+          ).start(() => resolve());
+        });
+        if (
+          statusRef.current !== "playing" ||
+          motionToken !== motionTokenRef.current
+        ) {
+          escapeNeedsFinalize = false;
+          return;
+        }
 
-    if (flight.result === "blocked") {
-      haptic("error");
-      await shakeAnim(live.rotateShake, settings.reducedMotion);
-      return;
-    }
-
-    setFlying();
-    haptic("light");
-
-    if (flight.result === "escape") {
-      bumpMoves();
-
-      await animateSnakeAlongPath(
-        live.id,
-        startCells,
-        live.direction,
-        flight.steps,
-        settings.reducedMotion
-      );
-
-      haptic("success");
-      await new Promise<void>((resolve) => {
-        Animated.timing(live.fade, {
-          toValue: 0,
-          duration: settings.reducedMotion ? 80 : 240,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start(() => resolve());
-      });
-
-      const updated = arrowsRef.current.map((a) =>
-        a.id === live.id ? { ...a, status: "escaped" as ArrowStatus } : a
-      );
-      arrowsRef.current = updated;
-      setArrows(updated);
-      checkWin(updated);
-      return;
-    }
-
-    await animateSnakeAlongPath(
-      live.id,
-      startCells,
-      live.direction,
-      flight.steps,
-      settings.reducedMotion
-    );
-    haptic("error");
-    await shakeAnim(live.rotateShake, settings.reducedMotion);
-
-    const final = flight.finalCells;
-
-    let updated = arrowsRef.current.map((a) => {
-      if (a.id === live.id) {
-        return {
-          ...a,
-          status: "broken" as ArrowStatus,
-          cells: final.map((c) => ({ ...c })),
-          visualCells: final.map((c) => ({ ...c })),
-        };
+        finalizeEscape(live.id, motionToken);
+        escapeNeedsFinalize = false;
       }
-      if (
-        a.status !== "escaped" &&
-        a.status !== "broken" &&
-        a.cells.some((c) => c.row === flight.hitRow && c.col === flight.hitCol)
-      ) {
-        return { ...a, status: "broken" as ArrowStatus };
-      }
-      return a;
-    });
-
-    arrowsRef.current = updated;
-    setArrows(updated);
-    bumpMoves();
-
-    updated
-      .filter((a) => a.status === "broken")
-      .forEach((a) =>
-        Animated.timing(a.fade, {
-          toValue: 0.25,
-          duration: 220,
-          useNativeDriver: true,
-        }).start()
+    } catch {
+      applyArrowsUpdate((prev) =>
+        prev.map((a) => {
+          if (a.id !== live.id) return a;
+          return {
+            ...a,
+            status: "idle" as ArrowStatus,
+            cells: startCells.map((c) => ({ ...c })),
+            visualCells: startCells.map((c) => ({ ...c })),
+          };
+        })
       );
-
-    setStatus("lost");
-    statusRef.current = "lost";
+      escapeNeedsFinalize = false;
+    } finally {
+      activeMovesRef.current = Math.max(0, activeMovesRef.current - 1);
+      if (escapeNeedsFinalize && motionToken === motionTokenRef.current) {
+        finalizeEscape(live.id, motionToken);
+      }
+      scheduleBoardSettle();
+    }
   };
 
   const onRestart = () => {
     haptic("selection");
     setResetSignal((s) => s + 1);
+  };
+
+  const onHome = () => {
+    haptic("medium");
+    router.replace("/");
   };
 
   const onNext = async () => {
@@ -440,12 +841,14 @@ export default function Game() {
       return;
     }
     haptic("medium");
-    // Hint: highlight the next arrow that is safe to fire (any idle arrow with clear path)
-    const next = arrowsRef.current.find((a) => {
-      if (a.status !== "idle") return false;
-      const flight = computeFlight(a, arrowsRef.current);
-      return flight.result === "escape";
-    });
+    const lv = levelRef.current;
+    if (!lv) return;
+    const safeIdx = findSafeEscapeFromStates(lv, arrowsRef.current);
+    if (safeIdx === null) {
+      haptic("warning");
+      return;
+    }
+    const next = arrowsRef.current.find((a) => a.id === `${levelId}-${safeIdx}`);
     if (next) {
       const updated = await consumeHint();
       setEnts(updated);
@@ -483,40 +886,100 @@ export default function Game() {
     router.back();
   };
 
-  // Wireframe grid: visible cell outlines, transparent interiors
-  const gridLines = [];
-  for (let r = 0; r < level.rows; r++) {
-    for (let c = 0; c < level.cols; c++) {
-      if (!activeCellSet.has(cellKey(r, c))) continue;
-      gridLines.push(
-        <View
-          key={`cell-${r}-${c}`}
-          style={{
-            position: "absolute",
-            left: boardPad + c * cellSize,
-            top: boardPad + r * cellSize,
-            width: cellSize,
-            height: cellSize,
-            borderWidth: 1,
-            borderColor: colors.gridTrace,
-            backgroundColor: "transparent",
-          }}
-        />
-      );
-      gridLines.push(
-        <View
-          key={`pad-${r}-${c}`}
-          style={[
-            styles.gridPad,
-            {
-              backgroundColor: colors.gridPad,
-              left: boardPad + c * cellSize + cellSize / 2 - 2,
-              top: boardPad + r * cellSize + cellSize / 2 - 2,
-            },
-          ]}
-        />
-      );
+  const gridLines = useMemo(() => {
+    if (!level) return null;
+    const lines = [];
+    for (let r = 0; r < level.rows; r++) {
+      for (let c = 0; c < level.cols; c++) {
+        if (!activeCellSet.has(cellKey(r, c))) continue;
+        lines.push(
+          <View
+            key={`cell-${r}-${c}`}
+            pointerEvents="none"
+            style={{
+              position: "absolute",
+              left: boardPad + c * cellSize,
+              top: boardPad + r * cellSize,
+              width: cellSize,
+              height: cellSize,
+              borderWidth: 1,
+              borderColor: colors.gridTrace,
+              backgroundColor: "transparent",
+            }}
+          />
+        );
+        lines.push(
+          <View
+            key={`pad-${r}-${c}`}
+            pointerEvents="none"
+            style={[
+              styles.gridPad,
+              {
+                backgroundColor: colors.gridPad,
+                left: boardPad + c * cellSize + cellSize / 2 - 2,
+                top: boardPad + r * cellSize + cellSize / 2 - 2,
+              },
+            ]}
+          />
+        );
+      }
     }
+    return lines;
+  }, [
+    level,
+    activeCellSet,
+    boardPad,
+    cellSize,
+    colors.gridTrace,
+    colors.gridPad,
+  ]);
+
+  const cellHitSlop = useMemo(
+    () => Math.max(0, Math.ceil((44 - cellSize) / 2)),
+    [cellSize]
+  );
+
+  if (!level) {
+    return (
+      <View
+        style={[
+          styles.container,
+          {
+            backgroundColor: colors.bg,
+            paddingTop: insets.top + SPACING.sm,
+          },
+        ]}
+        testID="game-loading"
+      >
+        <View style={styles.header}>
+          <Pressable
+            testID="game-loading-back-btn"
+            onPress={onBack}
+            style={styles.iconBtn}
+            hitSlop={12}
+          >
+            <Ionicons name="chevron-back" size={24} color={colors.text} />
+          </Pressable>
+          <View style={styles.headerCenter}>
+            <Text style={[styles.headerEyebrow, { color: colors.textMuted }]}>
+              {isDailyMode ? "DAILY" : "LEVEL"}
+            </Text>
+            <Text style={[styles.headerTitle, { color: colors.text }]}>
+              {isDailyMode
+                ? formatDailyDateLabel()
+                : levelId.toString().padStart(2, "0")}
+            </Text>
+          </View>
+          <View style={styles.iconBtn} />
+        </View>
+        <View style={styles.loadingScreen}>
+          <ActivityIndicator size="large" color={colors.cyan} />
+          <Text style={[styles.loadingLabel, { color: colors.textDim }]}>
+            Loading level…
+          </Text>
+        </View>
+      </View>
+    );
   }
 
   const idleArrows = arrows.filter(
@@ -543,10 +1006,12 @@ export default function Game() {
         </Pressable>
         <View style={styles.headerCenter}>
           <Text style={[styles.headerEyebrow, { color: colors.textMuted }]}>
-            {level.isSpecialShape ? "SPECIAL" : "LEVEL"}
+            {isDailyMode ? "DAILY" : level?.isSpecialShape ? "SPECIAL" : "LEVEL"}
           </Text>
           <Text style={[styles.headerTitle, { color: colors.text }]} testID="game-level-id">
-            {levelId.toString().padStart(2, "0")}
+            {isDailyMode
+              ? formatDailyDateLabel()
+              : levelId.toString().padStart(2, "0")}
           </Text>
           {level.shapeName ? (
             <Text
@@ -582,15 +1047,15 @@ export default function Game() {
             {idleArrows}/{arrows.length}
           </Text>
         </View>
-        <View style={styles.statBlock}>
+        <View style={[styles.statBlock, styles.statBlockCenter]}>
           <Text style={[styles.statLabel, { color: colors.textMuted }]}>
-            MOVES
+            TIME
           </Text>
           <Text
-            style={[styles.statValue, { color: colors.magenta }]}
-            testID="stat-moves"
+            style={[styles.statValue, styles.statTimer, { color: colors.magenta }]}
+            testID="stat-timer"
           >
-            {moves}
+            {formatElapsed(elapsedMs)}
           </Text>
         </View>
         <View style={styles.statBlock}>
@@ -639,65 +1104,53 @@ export default function Game() {
                 borderWidth: level.isSpecialShape ? 0 : 1,
               },
             ]}
+            pointerEvents="none"
             testID="game-board"
           />
           {gridLines}
-          {arrows.map((a) => {
-            const rotation = a.rotateShake.interpolate({
-              inputRange: [-1, 0, 1],
-              outputRange: ["-12deg", "0deg", "12deg"],
-            });
-            const isHinted = hintHighlight === a.id;
-            const trace =
-              a.status === "broken"
-                ? ARROW_GLOW.broken
-                : a.status === "escaped"
-                ? ARROW_GLOW.escaped
-                : isHinted
-                ? ARROW_GLOW.hint
-                : getNeonTrace(a.colorIndex);
-            const hit = pathHitBox(
-              a.visualCells,
-              cellSize,
-              boardPad,
-              a.direction
-            );
-            return (
-              <Animated.View
+          {arrows.map((a) =>
+            slidingIdsRef.current.has(a.id) ? null : (
+              <BoardArrowView
                 key={a.id}
-                style={[
-                  styles.arrowPathWrap,
-                  {
-                    left: hit.left,
-                    top: hit.top,
-                    width: hit.width,
-                    height: hit.height,
-                    transform: [{ rotate: rotation }],
-                    opacity: a.fade,
-                    pointerEvents: "none",
-                  },
-                ]}
-              >
-                <NeonPathArrow
-                  cells={a.visualCells}
-                  direction={a.direction}
-                  cellSize={cellSize}
-                  boardPad={boardPad}
-                  color={trace.color}
-                  glow={trace.glow}
-                  dimmed={a.status === "escaped" || a.status === "broken"}
-                />
-              </Animated.View>
-            );
-          })}
+                visualCells={a.visualCells}
+                direction={a.direction}
+                status={a.status}
+                colorIndex={a.colorIndex}
+                fade={a.fade}
+                rotateShake={a.rotateShake}
+                isHinted={hintHighlight === a.id}
+                cellSize={cellSize}
+                boardPad={boardPad}
+                colorBlindSafe={settings.colorBlindSafe}
+                largeArrows={settings.largeArrows}
+              />
+            )
+          )}
+          {activeSlides.map((slide) => (
+            <MovingArrowSprite
+              key={slide.id}
+              spec={slide}
+              motionToken={slide.motionToken}
+              getMotionToken={getMotionToken}
+              cellSize={cellSize}
+              boardPad={boardPad}
+              colorBlindSafe={settings.colorBlindSafe}
+              largeArrows={settings.largeArrows}
+              onFrame={handleSlideFrame}
+              onComplete={handleSlideComplete}
+            />
+          ))}
           {/* Full grid-cell tap targets (easier than tapping thin arrow strokes) */}
-          {cellTapTargets.map(({ row, col, arrowId }) => (
+          {cellTapTargets.map(({ row, col, arrowId, direction }) => (
             <Pressable
               key={`tap-${row}-${col}`}
               testID={`cell-${row}-${col}`}
-              accessibilityLabel="Arrow cell"
+              accessibilityRole="button"
+              accessibilityLabel={`Arrow pointing ${directionLabel[direction]}, row ${row + 1} column ${col + 1}`}
+              accessibilityHint="Double tap to fire this arrow"
               onPress={() => fireArrowById(arrowId)}
-              disabled={status !== "playing"}
+              disabled={status !== "playing" || !idleArrowIds.has(arrowId)}
+              hitSlop={cellHitSlop}
               style={[
                 styles.cellTap,
                 {
@@ -752,12 +1205,13 @@ export default function Game() {
         <Pressable
           testID="game-skip-btn"
           onPress={onSkip}
+          disabled={isDailyMode}
           style={({ pressed }) => [
             styles.actionChip,
             {
               backgroundColor: colors.surface,
               borderColor: colors.border,
-              opacity: pressed ? 0.7 : 1,
+              opacity: isDailyMode ? 0.35 : pressed ? 0.7 : 1,
             },
           ]}
         >
@@ -773,36 +1227,40 @@ export default function Game() {
         <AdBanner />
       </View>
 
-      {/* Win/Lose Modal */}
-      <Modal
-        visible={status !== "playing"}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {}}
-      >
-        <View style={styles.modalBackdrop}>
+      {/* Win / Stuck overlay */}
+      {status !== "playing" ? (
+        <View style={styles.endOverlay}>
           <View
             style={[
               styles.modal,
               {
                 backgroundColor: colors.surface,
-                borderColor: status === "won" ? colors.cyan : colors.red,
-                shadowColor: status === "won" ? colors.cyan : colors.red,
+                borderColor: status === "won" ? colors.cyan : colors.yellow,
+                shadowColor: status === "won" ? colors.cyan : colors.yellow,
               },
             ]}
-            testID={status === "won" ? "modal-won" : "modal-lost"}
+            testID={status === "won" ? "modal-won" : "modal-stuck"}
           >
             <Text
               style={[
                 styles.modalEyebrow,
-                { color: status === "won" ? colors.cyan : colors.red },
+                { color: status === "won" ? colors.cyan : colors.yellow },
               ]}
             >
-              {status === "won" ? "ESCAPED" : "COLLISION"}
+              {status === "won" ? "ESCAPED" : "LOCKED OUT"}
             </Text>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
-              {status === "won" ? "Level Clear" : "Try Again"}
+              {status === "won"
+                ? isDailyMode
+                  ? "Daily Complete"
+                  : "Level Clear"
+                : "No Way Forward"}
             </Text>
+            {status === "stuck" && (
+              <Text style={[styles.modalSub, { color: colors.textDim, marginTop: SPACING.sm }]}>
+                That arrow could not escape. Restart and try a different order.
+              </Text>
+            )}
             {status === "won" && (
               <View style={styles.modalStars}>
                 {[1, 2, 3].map((s) => {
@@ -824,8 +1282,8 @@ export default function Game() {
               </View>
             )}
             <Text style={[styles.modalSub, { color: colors.textDim }]}>
-              Moves: {moves} · Arrows: {level.arrows.length} · {level.rows}×
-              {level.cols}
+              Time: {formatElapsed(elapsedMs)} · Arrows: {level.arrows.length} ·{" "}
+              {level.rows}×{level.cols}
             </Text>
             <View style={styles.modalActions}>
               <Pressable
@@ -843,44 +1301,40 @@ export default function Game() {
               </Pressable>
               {status === "won" ? (
                 <Pressable
-                  testID="modal-next-btn"
-                  onPress={onNext}
+                  testID={isDailyMode ? "modal-home-btn" : "modal-next-btn"}
+                  onPress={isDailyMode ? onHome : onNext}
                   style={[styles.modalBtn, { backgroundColor: colors.cyan }]}
                 >
                   <Text style={[styles.modalBtnLabel, { color: "#02141a" }]}>
-                    NEXT
+                    {isDailyMode ? "HOME" : "NEXT"}
                   </Text>
-                  <Ionicons name="arrow-forward" size={18} color="#02141a" />
-                </Pressable>
-              ) : (
-                <Pressable
-                  testID="modal-skip-btn"
-                  onPress={onSkip}
-                  style={[
-                    styles.modalBtn,
-                    { backgroundColor: colors.bgElev, borderColor: colors.border },
-                  ]}
-                >
                   <Ionicons
-                    name="play-skip-forward"
-                    size={16}
-                    color={colors.textDim}
+                    name={isDailyMode ? "home" : "arrow-forward"}
+                    size={18}
+                    color="#02141a"
                   />
-                  <Text style={[styles.modalBtnLabel, { color: colors.text }]}>
-                    SKIP
-                  </Text>
                 </Pressable>
-              )}
+              ) : null}
             </View>
           </View>
         </View>
-      </Modal>
+      ) : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: SPACING.md },
+  loadingScreen: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loadingLabel: {
+    marginTop: SPACING.md,
+    fontSize: 14,
+    fontWeight: "600",
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -900,8 +1354,18 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   statBlock: { alignItems: "center", flex: 1 },
+  statBlockCenter: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
   statLabel: { fontSize: 10, letterSpacing: 3, fontWeight: "700" },
   statValue: { fontSize: 18, fontWeight: "900", marginTop: 2 },
+  statTimer: {
+    fontSize: 22,
+    fontVariant: ["tabular-nums"],
+    letterSpacing: 1,
+  },
   boardWrap: { alignItems: "center", justifyContent: "center", flex: 1, overflow: "visible" },
   boardCanvas: {
     position: "relative",
@@ -928,6 +1392,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     backgroundColor: "transparent",
     zIndex: 10,
+    elevation: 12,
   },
   actionBar: {
     flexDirection: "row",
@@ -960,8 +1425,10 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: "900",
   },
-  modalBackdrop: {
-    flex: 1,
+  endOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 200,
+    elevation: 200,
     backgroundColor: "rgba(0,0,0,0.85)",
     alignItems: "center",
     justifyContent: "center",

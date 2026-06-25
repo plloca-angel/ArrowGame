@@ -12,22 +12,31 @@ type Ctx = {
 
 const SettingsContext = createContext<Ctx | null>(null);
 
-export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<Settings>({
-    sound: true,
-    haptics: true,
-    reducedMotion: false,
-    theme: "cyan",
-    largeArrows: false,
-    highContrast: false,
-    colorBlindSafe: false,
-  });
+export function SettingsProvider({
+  children,
+  initialSettings,
+}: {
+  children: ReactNode;
+  initialSettings?: Settings;
+}) {
+  const [settings, setSettings] = useState<Settings>(
+    initialSettings ?? {
+      sound: true,
+      haptics: true,
+      reducedMotion: false,
+      theme: "cyan",
+      largeArrows: false,
+      highContrast: false,
+      colorBlindSafe: false,
+    }
+  );
 
   useEffect(() => {
+    if (initialSettings) return;
     loadSettings()
       .then((s) => setSettings(s))
       .catch(() => {});
-  }, []);
+  }, [initialSettings]);
 
   const setSetting = useCallback(
     <K extends keyof Settings>(key: K, value: Settings[K]) => {

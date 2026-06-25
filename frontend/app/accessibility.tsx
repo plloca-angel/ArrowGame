@@ -2,9 +2,9 @@ import {
   View,
   Text,
   StyleSheet,
-  Pressable,
   ScrollView,
 } from "react-native";
+import { AppPressable as Pressable } from "../src/components/AppPressable";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
