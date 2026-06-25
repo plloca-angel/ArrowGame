@@ -1,14 +1,18 @@
 import { shouldUseNativeAds } from "./nativeGate";
 import { getInterstitialUnitId } from "./adUnit";
+import { showMockInterstitialAd } from "./mockInterstitialBridge";
 
 const SHOW_TIMEOUT_MS = 25000;
 
 /**
  * Loads (if needed) and shows one interstitial; resolves when dismissed or on error/timeout.
- * No-op in Expo Go / web / if native module missing.
+ * In Expo Go / web, shows the mocked "Test Ad" interstitial instead.
  */
 export async function presentInterstitialAd(): Promise<void> {
-  if (!shouldUseNativeAds()) return;
+  if (!shouldUseNativeAds()) {
+    await showMockInterstitialAd();
+    return;
+  }
 
   try {
     const { InterstitialAd, AdEventType, TestIds } = await import(

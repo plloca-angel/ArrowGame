@@ -1,6 +1,9 @@
-import { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode, useEffect, useCallback } from "react";
 import { View, StyleSheet } from "react-native";
 import { InterstitialAd as MockedInterstitial } from "../InterstitialAd";
+import {
+  registerMockInterstitialHandler,
+} from "../ads/mockInterstitialBridge";
 
 type AdsCtx = {
   showInterstitial: () => Promise<void>;
@@ -13,11 +16,19 @@ export function AdsProvider({ children }: { children: ReactNode }) {
   const [resolver, setResolver] = useState<(() => void) | null>(null);
   const [visible, setVisible] = useState(false);
 
-  const showInterstitial = () =>
-    new Promise<void>((resolve) => {
-      setResolver(() => resolve);
-      setVisible(true);
-    });
+  const showInterstitial = useCallback(
+    () =>
+      new Promise<void>((resolve) => {
+        setResolver(() => resolve);
+        setVisible(true);
+      }),
+    []
+  );
+
+  useEffect(() => {
+    registerMockInterstitialHandler(showInterstitial);
+    return () => registerMockInterstitialHandler(null);
+  }, [showInterstitial]);
 
   const onClose = () => {
     setVisible(false);

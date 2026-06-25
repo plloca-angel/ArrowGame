@@ -10,6 +10,7 @@ import { AppPressable as Pressable } from "./components/AppPressable";
 import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "./SettingsContext";
 import { RADIUS, SPACING } from "./theme";
+import { shouldUseNativeAds } from "./ads/nativeGate";
 
 // Mocked full-screen interstitial ad. Visual-only, runs a countdown then
 // becomes dismissible. In a real build this would be replaced by
@@ -74,6 +75,7 @@ export function InterstitialAd({
   });
 
   const dismissible = remaining === 0;
+  const previewMode = !shouldUseNativeAds();
 
   return (
     <View style={styles.overlay} testID="interstitial-ad">
@@ -87,7 +89,7 @@ export function InterstitialAd({
             ]}
           >
             <Text style={[styles.adTagText, { color: colors.textMuted }]}>
-              SPONSORED · AD
+              {previewMode ? "TEST AD · EXPO GO PREVIEW" : "SPONSORED · AD"}
             </Text>
           </View>
           <Pressable
@@ -185,11 +187,17 @@ export function InterstitialAd({
         </View>
 
         <Text style={[styles.foot, { color: colors.textMuted }]}>
-          Ads keep Arrow Escape free. Tap{" "}
-          <Text style={{ color: colors.cyan, fontWeight: "800" }}>
-            Remove Ads
-          </Text>{" "}
-          in the Store to play uninterrupted.
+          {previewMode
+            ? "This is a test interstitial. The APK build uses Google AdMob test units until you add real ad IDs."
+            : "Ads keep Arrow Escape free. Tap "}
+          {!previewMode ? (
+            <>
+              <Text style={{ color: colors.cyan, fontWeight: "800" }}>
+                Remove Ads
+              </Text>{" "}
+              in the Store to play uninterrupted.
+            </>
+          ) : null}
         </Text>
       </View>
     </View>
