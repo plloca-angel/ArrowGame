@@ -18,18 +18,26 @@ import {
 } from "./levelSolvability";
 import type { ArrowDef, Direction, GridCell, Level } from "./levelModel";
 import {
+  arrowExitDirectionValid,
   cellKey,
   DIR_VEC,
   getLevelFlightSurface,
+  levelArrowsExitValid,
+  sanitizeLevelArrowDirections,
 } from "./levelModel";
-import prebuiltLevelData from "./data/prebuiltLevels.json";
 import {
   hydratePersistedLevels,
   persistGeneratedLevel,
 } from "./levelPersistence";
+import { scheduleLevelWarmup } from "./levelWarmup";
 
 export type { ArrowDef, Direction, GridCell, Level } from "./levelModel";
 export { cellKey, getLevelActiveCellSet, DIR_VEC } from "./levelModel";
+export {
+  arrowExitDirectionValid,
+  resolveArrowExitDirection,
+  sanitizeLevelArrowDirections,
+} from "./levelModel";
 
 const OPPOSITE: Record<Direction, Direction> = {
   up: "down",
@@ -118,14 +126,6 @@ function occupiedNeighborScore(
     if (occupied.has(cellKey(r + dr, c + dc))) score++;
   }
   return score;
-}
-
-function headAlignsWithExit(cells: GridCell[], dir: Direction): boolean {
-  if (cells.length < 2) return true;
-  const head = cells[cells.length - 1];
-  const prev = cells[cells.length - 2];
-  const [pdr, pdc] = DIR_VEC[dir];
-  return prev.row === head.row - pdr && prev.col === head.col - pdc;
 }
 
 function stepDir(from: GridCell, to: GridCell): Direction | null {
@@ -331,12 +331,13 @@ function repairDirectionsToSolvable(level: Level): Level | null {
     const options = dirs.filter((d) => d !== arrows[i].direction);
     shuffleDirs(options, rand);
     for (const dir of options) {
+      if (!arrowExitDirectionValid(arrows[i].cells, dir)) continue;
       arrows[i].direction = dir;
       const trial: Level = { ...level, arrows: arrows.map((a) => ({ ...a })) };
       if (!verifyFullGridFill(trial) || !levelHasMultiCellPaths(trial)) continue;
       if (trial.arrows.length >= 2 && !levelHasBlockedStarts(trial)) continue;
       if (verifyGreedyClearBoard(trial)) {
-        return trial;
+        return sanitizeLevelArrowDirections(trial);
       }
     }
   }
@@ -448,7 +449,7 @@ function levelFromPlaced(
   special: boolean
 ): Level {
   const arrows = [...placed].reverse();
-  return {
+  return sanitizeLevelArrowDirections({
     id,
     rows,
     cols,
@@ -463,16 +464,18 @@ function levelFromPlaced(
         : special && shape
         ? `Special shape: ${shape.name}!`
         : undefined,
-  };
+  });
 }
 
 function passesAcceptance(draft: Level): boolean {
+  if (!levelArrowsExitValid(draft)) return false;
   if (!verifyFullGridFill(draft) || !levelHasMultiCellPaths(draft)) return false;
   if (draft.arrows.length >= 2 && !levelHasBlockedStarts(draft)) return false;
   return verifyGreedyClearBoard(draft) || isLevelSolvable(draft);
 }
 
 function acceptGeneratedLevel(draft: Level): boolean {
+  if (!levelArrowsExitValid(draft)) return false;
   if (!verifyFullGridFill(draft) || !levelHasMultiCellPaths(draft)) return false;
   if (draft.arrows.length >= 2 && !levelHasBlockedStarts(draft)) return false;
   return verifyGreedyClearBoard(draft);
@@ -519,7 +522,7 @@ export function generateLevel(id: number, shapeBump = 0): Level {
 
           for (const len of shuffledLengthRange(minLen, maxLen, rand)) {
             cells = growPath(r, c, dir, len, activeCells, occupied, rand, special);
-            if (cells && cells.length >= 2 && !headAlignsWithExit(cells, dir)) {
+            if (cells && cells.length >= 2 && !arrowExitDirectionValid(cells, dir)) {
               cells = null;
               continue;
             }
@@ -533,7 +536,7 @@ export function generateLevel(id: number, shapeBump = 0): Level {
           if (!cells && minLen > 2) {
             for (const len of shuffledLengthRange(3, Math.min(3, maxLen), rand)) {
               cells = growPath(r, c, dir, len, activeCells, occupied, rand, special);
-              if (cells && cells.length >= 2 && !headAlignsWithExit(cells, dir)) {
+              if (cells && cells.length >= 2 && !arrowExitDirectionValid(cells, dir)) {
                 cells = null;
                 continue;
               }
@@ -730,7 +733,7 @@ function buildSolvableFallbackLevel(
         for (const len of shuffledLengthRange(2, maxLen, rand)) {
           const cells = growPath(row, col, dir, len, activeCells, occupied, rand, false);
           if (!cells) continue;
-          if (!headAlignsWithExit(cells, dir)) continue;
+          if (!arrowExitDirectionValid(cells, dir)) continue;
           const candidate = { cells, direction: dir };
           if (
             !canPlaceArrowWithOthers(
@@ -805,7 +808,7 @@ function buildGuaranteedMultiCellLevel(
       for (const dir of dirs) {
         for (const len of shuffledLengthRange(2, Math.min(maxLen, 4), rand)) {
           const cells = growPath(row, col, dir, len, activeCells, occupied, rand, false);
-          if (!cells || !headAlignsWithExit(cells, dir)) continue;
+          if (!cells || !arrowExitDirectionValid(cells, dir)) continue;
           const candidate = { cells, direction: dir };
           added = candidate;
           break;
@@ -848,7 +851,7 @@ function buildGuaranteedMultiCellLevel(
 }
 
 const levelCache = new Map<number, Level>();
-export const LEVEL_CACHE_VERSION = 22;
+export const LEVEL_CACHE_VERSION = 23;
 let activeCacheVersion = 0;
 
 // Levels pre-generated at build time (scripts/prebuild-levels.ts). They're
@@ -857,19 +860,28 @@ let activeCacheVersion = 0;
 // shapes (worst observed: 65s). Only used when the bundle matches the current
 // cache version; otherwise we fall back to generating live. Levels beyond the
 // bundled range are always generated live (and then cached for the session).
-const prebuiltBundle = prebuiltLevelData as unknown as {
+type PrebuiltBundle = {
   version: number;
   maxLevel: number;
   levels: Record<string, Level>;
 };
-const prebuiltLevels: Map<number, Level> =
-  prebuiltBundle.version === LEVEL_CACHE_VERSION
-    ? new Map(
-        Object.entries(prebuiltBundle.levels).map(([k, v]) => [Number(k), v])
-      )
-    : new Map();
 
-export const PREBUILT_MAX_LEVEL = prebuiltBundle.maxLevel ?? 200;
+let prebuiltBundle: PrebuiltBundle | null = null;
+
+function getPrebuiltBundle(): PrebuiltBundle {
+  if (!prebuiltBundle) {
+    prebuiltBundle = require("./data/prebuiltLevels.json") as PrebuiltBundle;
+  }
+  return prebuiltBundle;
+}
+
+function getPrebuiltLevel(id: number): Level | undefined {
+  const bundle = getPrebuiltBundle();
+  if (bundle.version !== LEVEL_CACHE_VERSION) return undefined;
+  return bundle.levels[String(id)];
+}
+
+export const PREBUILT_MAX_LEVEL = 200;
 
 let persistedLevels = new Map<number, Level>();
 let hydratePromise: Promise<void> | null = null;
@@ -894,6 +906,10 @@ export function clearLevelCache(): void {
   levelCache.clear();
 }
 
+export function isLevelCached(id: number): boolean {
+  return levelCache.has(Math.max(1, id));
+}
+
 export function getLevel(id: number): Level {
   if (activeCacheVersion !== LEVEL_CACHE_VERSION) {
     levelCache.clear();
@@ -903,19 +919,21 @@ export function getLevel(id: number): Level {
   const cached = levelCache.get(key);
   if (cached) return cached;
 
-  const prebuilt = prebuiltLevels.get(key);
+  const prebuilt = getPrebuiltLevel(key);
   if (prebuilt) {
-    levelCache.set(key, prebuilt);
-    return prebuilt;
+    const level = sanitizeLevelArrowDirections(prebuilt);
+    levelCache.set(key, level);
+    return level;
   }
 
   const persisted = persistedLevels.get(key);
   if (persisted) {
-    levelCache.set(key, persisted);
-    return persisted;
+    const level = sanitizeLevelArrowDirections(persisted);
+    levelCache.set(key, level);
+    return level;
   }
 
-  const level = buildLevelFresh(key);
+  const level = sanitizeLevelArrowDirections(buildLevelFresh(key));
   levelCache.set(key, level);
   if (key > PREBUILT_MAX_LEVEL) {
     void persistGeneratedLevel(
@@ -940,7 +958,7 @@ export function buildLevelFresh(id: number): Level {
   for (const bump of shapeBumps) {
     try {
       const level = generateLevel(key, bump);
-      if (passesAcceptance(level)) return level;
+      if (passesAcceptance(level)) return sanitizeLevelArrowDirections(level);
     } catch (err) {
       lastError = err;
     }
@@ -951,13 +969,5 @@ export function buildLevelFresh(id: number): Level {
 
 /** Pre-generate a level off the critical UI path (e.g. on home screen). */
 export function warmLevel(id: number): void {
-  const key = Math.max(1, id);
-  if (levelCache.has(key)) return;
-  setTimeout(() => {
-    try {
-      getLevel(key);
-    } catch {
-      // generation retries on next getLevel call
-    }
-  }, 0);
+  scheduleLevelWarmup(id);
 }

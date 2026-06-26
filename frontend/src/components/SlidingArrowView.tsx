@@ -43,8 +43,15 @@ export function SlidingArrowView({
   useEffect(() => {
     const startedAt = performance.now();
     let raf = 0;
-    let done = false;
+    let cancelled = false;
+    let finished = false;
     let lastIdx = -1;
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      onCompleteRef.current();
+    };
 
     const applyFrame = (idx: number) => {
       if (idx === lastIdx) return;
@@ -59,15 +66,14 @@ export function SlidingArrowView({
     applyFrame(0);
 
     const tick = (now: number) => {
-      if (done) return;
+      if (cancelled) return;
       if (getMotionToken() !== motionToken) {
-        done = true;
-        cancelAnimationFrame(raf);
+        cancelled = true;
         return;
       }
 
       const elapsed = now - startedAt;
-      const t = Math.min(1, elapsed / durationMs);
+      const t = Math.min(1, elapsed / Math.max(1, durationMs));
       const idx =
         frames.length <= 1
           ? 0
@@ -78,15 +84,18 @@ export function SlidingArrowView({
       if (t < 1) {
         raf = requestAnimationFrame(tick);
       } else {
-        done = true;
-        onCompleteRef.current();
+        finish();
       }
     };
 
     raf = requestAnimationFrame(tick);
     return () => {
-      done = true;
+      cancelled = true;
       cancelAnimationFrame(raf);
+      // If the view unmounts mid-slide (layout churn), finish so arrows don't freeze.
+      if (!finished && getMotionToken() === motionToken) {
+        finish();
+      }
     };
   }, [frames, durationMs, motionToken, getMotionToken]);
 
@@ -94,8 +103,6 @@ export function SlidingArrowView({
     <View
       pointerEvents="none"
       collapsable={false}
-      renderToHardwareTextureAndroid
-      shouldRasterizeIOS
       style={[
         styles.wrap,
         { left, top, width, height },
@@ -134,8 +141,7 @@ export function SlidingArrowView({
 const styles = StyleSheet.create({
   wrap: {
     position: "absolute",
-    ...(Platform.OS === "android"
-      ? { elevation: 8 }
-      : { zIndex: 8 }),
+    zIndex: 8,
+    ...(Platform.OS === "android" ? { elevation: 0 } : {}),
   },
 });

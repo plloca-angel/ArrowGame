@@ -9,14 +9,14 @@ import {
   Platform,
 } from "react-native";
 import { AppPressable as Pressable } from "../src/components/AppPressable";
-import { useRouter, useFocusEffect } from "expo-router";
+import { Link, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "../src/SettingsContext";
 import { loadProgress, Progress, loadEntitlements, Entitlements, isLevelUnlocked, getLevelStars, loadDailyChallenge, DailyChallengeState } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
-import { warmLevel } from "../src/levels";
 import { formatDailyDateLabel, formatDailyTime, getDailyChallengeLevelId } from "../src/dailyChallenge";
+import { scheduleLevelWarmup } from "../src/levelWarmup";
 
 const LEVELS_PER_PAGE = 25;
 
@@ -37,11 +37,6 @@ export default function Home() {
         setProgress(p);
         const page = Math.max(0, Math.floor((p.currentLevel - 1) / LEVELS_PER_PAGE));
         setLevelPage(page);
-        setTimeout(() => {
-          warmLevel(p.currentLevel);
-          warmLevel(p.currentLevel + 1);
-          warmLevel(getDailyChallengeLevelId());
-        }, 250);
       });
       loadEntitlements().then(setEnts);
       loadDailyChallenge().then(setDaily);
@@ -78,14 +73,25 @@ export default function Home() {
   const completed = progress?.completedCount ?? 0;
   const isFirstPlay = completed === 0;
 
+  const warmLevelsForPlay = (currentLevel: number) => {
+    void import("../src/levels").then(({ getLevel }) => {
+      getLevel(currentLevel);
+      getLevel(currentLevel + 1);
+      getLevel(getDailyChallengeLevelId());
+    });
+    scheduleLevelWarmup(currentLevel, currentLevel + 1, getDailyChallengeLevelId());
+  };
+
   const onPlayDaily = () => {
-    haptic("medium");
+    warmLevelsForPlay(nextLevel);
     router.push({ pathname: "/game", params: { mode: "daily" } });
+    haptic("medium");
   };
 
   const onPlay = () => {
-    haptic("medium");
+    warmLevelsForPlay(nextLevel);
     router.push({ pathname: "/game", params: { level: String(nextLevel) } });
+    haptic("medium");
   };
 
   const onSelectLevel = (levelId: number) => {
@@ -95,6 +101,7 @@ export default function Home() {
     }
     haptic("selection");
     setLevelSelectorOpen(false);
+    warmLevelsForPlay(levelId);
     router.push({ pathname: "/game", params: { level: String(levelId) } });
   };
 
@@ -167,39 +174,36 @@ export default function Home() {
           </Text>
         </View>
         <View style={styles.topRight}>
-          <Pressable
-            testID="home-store-btn"
-            onPress={() => {
-              haptic("selection");
-              router.push("/store");
-            }}
-            hitSlop={10}
-            style={[styles.iconBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
-          >
-            <Ionicons name="bag-outline" size={18} color={colors.text} />
-          </Pressable>
-          <Pressable
-            testID="home-settings-btn"
-            onPress={() => {
-              haptic("selection");
-              router.push("/settings");
-            }}
-            hitSlop={10}
-            style={[styles.iconBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
-          >
-            <Ionicons name="settings-outline" size={18} color={colors.text} />
-          </Pressable>
-          <Pressable
-            testID="home-accessibility-btn"
-            onPress={() => {
-              haptic("selection");
-              router.push("/accessibility");
-            }}
-            hitSlop={10}
-            style={[styles.iconBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
-          >
-            <Ionicons name="accessibility-outline" size={18} color={colors.text} />
-          </Pressable>
+          <Link href="/store" asChild>
+            <Pressable
+              testID="home-store-btn"
+              onPress={() => haptic("selection")}
+              hitSlop={10}
+              style={[styles.iconBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            >
+              <Ionicons name="bag-outline" size={18} color={colors.text} />
+            </Pressable>
+          </Link>
+          <Link href="/settings" asChild>
+            <Pressable
+              testID="home-settings-btn"
+              onPress={() => haptic("selection")}
+              hitSlop={10}
+              style={[styles.iconBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            >
+              <Ionicons name="settings-outline" size={18} color={colors.text} />
+            </Pressable>
+          </Link>
+          <Link href="/accessibility" asChild>
+            <Pressable
+              testID="home-accessibility-btn"
+              onPress={() => haptic("selection")}
+              hitSlop={10}
+              style={[styles.iconBtn, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            >
+              <Ionicons name="accessibility-outline" size={18} color={colors.text} />
+            </Pressable>
+          </Link>
         </View>
       </View>
 
@@ -389,50 +393,48 @@ export default function Home() {
 
         {/* Secondary nav */}
         <View style={styles.secondaryRow}>
-          <Pressable
-            testID="home-store-card"
-            onPress={() => {
-              haptic("selection");
-              router.push("/store");
-            }}
-            style={({ pressed }) => [
-              styles.secondaryCard,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-                opacity: pressed ? 0.7 : 1,
-              },
-            ]}
-          >
-            <Ionicons name="bag" size={18} color={colors.magenta} />
-            <Text style={[styles.secondaryLabel, { color: colors.text }]}>STORE</Text>
-            <Text style={[styles.secondarySub, { color: colors.textMuted }]}>
-              Hints · Remove ads
-            </Text>
-          </Pressable>
-          <Pressable
-            testID="home-settings-card"
-            onPress={() => {
-              haptic("selection");
-              router.push("/settings");
-            }}
-            style={({ pressed }) => [
-              styles.secondaryCard,
-              {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-                opacity: pressed ? 0.7 : 1,
-              },
-            ]}
-          >
-            <Ionicons name="settings" size={18} color={colors.cyan} />
-            <Text style={[styles.secondaryLabel, { color: colors.text }]}>
-              SETTINGS
-            </Text>
-            <Text style={[styles.secondarySub, { color: colors.textMuted }]}>
-              Sound · Theme · Reset
-            </Text>
-          </Pressable>
+          <Link href="/store" asChild>
+            <Pressable
+              testID="home-store-card"
+              onPress={() => haptic("selection")}
+              style={({ pressed }) => [
+                styles.secondaryCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  opacity: pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              <Ionicons name="bag" size={18} color={colors.magenta} />
+              <Text style={[styles.secondaryLabel, { color: colors.text }]}>STORE</Text>
+              <Text style={[styles.secondarySub, { color: colors.textMuted }]}>
+                Hints · Remove ads
+              </Text>
+            </Pressable>
+          </Link>
+          <Link href="/settings" asChild>
+            <Pressable
+              testID="home-settings-card"
+              onPress={() => haptic("selection")}
+              style={({ pressed }) => [
+                styles.secondaryCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                  opacity: pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              <Ionicons name="settings" size={18} color={colors.cyan} />
+              <Text style={[styles.secondaryLabel, { color: colors.text }]}>
+                SETTINGS
+              </Text>
+              <Text style={[styles.secondarySub, { color: colors.textMuted }]}>
+                Sound · Theme · Reset
+              </Text>
+            </Pressable>
+          </Link>
         </View>
       </ScrollView>
       </View>

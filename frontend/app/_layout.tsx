@@ -18,6 +18,11 @@ export default function RootLayout() {
   const [ready, setReady] = useState(false);
   const [initialSettings, setInitialSettings] = useState<Settings | null>(null);
 
+  // Reveal our dark loading UI immediately — don't sit on Expo Go's white splash.
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const startedAt = Date.now();
@@ -28,7 +33,6 @@ export default function RootLayout() {
         setInitialSettings(result.settings);
         await waitForMinSplash(startedAt);
         if (cancelled) return;
-        await SplashScreen.hideAsync().catch(() => {});
         setReady(true);
       })
       .catch(async () => {
@@ -43,7 +47,7 @@ export default function RootLayout() {
           colorBlindSafe: false,
         });
         await waitForMinSplash(startedAt);
-        await SplashScreen.hideAsync().catch(() => {});
+        if (cancelled) return;
         setReady(true);
       });
 
@@ -52,28 +56,29 @@ export default function RootLayout() {
     };
   }, []);
 
-  if (!ready || !initialSettings) {
-    return <AppLoadingScreen />;
-  }
+  const content =
+    !ready || !initialSettings ? (
+      <AppLoadingScreen />
+    ) : (
+      <SettingsProvider initialSettings={initialSettings}>
+        <AdsProvider>
+          <AdsBootstrap />
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: "#05060a" },
+              animation: "none",
+            }}
+          />
+        </AdsProvider>
+      </SettingsProvider>
+    );
 
   return (
     <View style={styles.root}>
       <ErrorBoundary>
-        <SafeAreaProvider>
-          <SettingsProvider initialSettings={initialSettings}>
-            <AdsProvider>
-              <AdsBootstrap />
-              <StatusBar style="light" />
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: "#05060a" },
-                  animation: "fade",
-                }}
-              />
-            </AdsProvider>
-          </SettingsProvider>
-        </SafeAreaProvider>
+        <SafeAreaProvider>{content}</SafeAreaProvider>
       </ErrorBoundary>
     </View>
   );

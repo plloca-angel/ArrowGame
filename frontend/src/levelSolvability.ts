@@ -3,6 +3,7 @@ import { canLiveArrowEscape, toLiveArrow } from "./gameBoard";
 import {
   ArrowDef,
   Level,
+  arrowExitDirectionValid,
   cellKey,
   getLevelActiveCellSet,
   getLevelFlightSurface,
@@ -463,6 +464,9 @@ export function verifyLevelMoveRules(level: Level): string[] {
 
   for (let i = 0; i < n; i++) {
     const def = level.arrows[i];
+    if (!arrowExitDirectionValid(def.cells, def.direction)) {
+      errors.push(`arrow ${i}: tip points into own body`);
+    }
     const canEsc = canArrowEscapeNow(
       def,
       level.arrows,

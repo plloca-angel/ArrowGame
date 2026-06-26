@@ -14,13 +14,21 @@ import {
   Easing,
   Dimensions,
   ActivityIndicator,
+  Platform,
+  Pressable as CellPressable,
 } from "react-native";
 import { AppPressable as Pressable } from "../src/components/AppPressable";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "../src/SettingsContext";
-import { Direction, getLevel, Level, GridCell, getLevelActiveCellSet, cellKey } from "../src/levels";
+import {
+  Direction,
+  Level,
+  GridCell,
+  cellKey,
+  getLevelActiveCellSet,
+} from "../src/levelModel";
 import {
   recordWin,
   loadEntitlements,
@@ -176,6 +184,7 @@ export default function Game() {
     : Math.max(1, parseInt(levelParam || "1", 10) || 1);
   const [level, setLevel] = useState<Level | null>(null);
   const levelRef = useRef<Level | null>(null);
+  const retryCountRef = useRef(0);
 
   useEffect(() => {
     levelRef.current = level;
@@ -184,15 +193,14 @@ export default function Game() {
 
   useEffect(() => {
     let cancelled = false;
+    retryCountRef.current = 0;
     setLevel(null);
-    const timer = setTimeout(() => {
+    void import("../src/levels").then(({ getLevel }) => {
       if (cancelled) return;
-      const loaded = getLevel(levelId);
-      if (!cancelled) setLevel(loaded);
-    }, 0);
+      setLevel(getLevel(levelId));
+    });
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
   }, [levelId]);
 
@@ -203,6 +211,10 @@ export default function Game() {
 
   // Board area: size cells from both width and height so the grid stays centered as levels grow
   const [boardSpace, setBoardSpace] = useState({ w: 0, h: 0 });
+  const [stableLayout, setStableLayout] = useState<{
+    cellSize: number;
+    boardPad: number;
+  } | null>(null);
   const win = Dimensions.get("window");
   const layoutW =
     boardSpace.w > 0
@@ -219,11 +231,13 @@ export default function Game() {
     minCell,
     Math.floor(Math.min(cellFromW, cellFromH) * arrowScale)
   );
-  const boardW = cellSize * (level?.cols ?? 3);
-  const boardH = cellSize * (level?.rows ?? 3);
   const boardPad = Math.ceil(cellSize * (level?.isSpecialShape ? 1.6 : 2));
-  const canvasW = boardW + boardPad * 2;
-  const canvasH = boardH + boardPad * 2;
+  const boardCellSize = stableLayout?.cellSize ?? cellSize;
+  const boardPadLocked = stableLayout?.boardPad ?? boardPad;
+  const boardW = boardCellSize * (level?.cols ?? 3);
+  const boardH = boardCellSize * (level?.rows ?? 3);
+  const canvasW = boardW + boardPadLocked * 2;
+  const canvasH = boardH + boardPadLocked * 2;
 
   const [arrows, setArrows] = useState<ArrowState[]>([]);
   const arrowsRef = useRef<ArrowState[]>([]);
@@ -250,6 +264,24 @@ export default function Game() {
   useEffect(() => {
     activeSlidesRef.current = activeSlides;
   }, [activeSlides]);
+
+  useEffect(() => {
+    setStableLayout(null);
+    setBoardSpace({ w: 0, h: 0 });
+  }, [level, resetSignal]);
+
+  useEffect(() => {
+    if (boardSpace.w <= 0 || boardSpace.h <= 0) return;
+    // Keep cell size frozen while arrows slide; refit when idle so the grid
+    // doesn't overflow after chrome (ads, safe area) settles.
+    if (activeSlides.length > 0 || slidingIdsRef.current.size > 0) return;
+    setStableLayout({ cellSize, boardPad });
+  }, [boardSpace, cellSize, boardPad, activeSlides.length]);
+
+  const slidingIdSet = useMemo(
+    () => new Set(activeSlides.map((s) => s.id)),
+    [activeSlides]
+  );
 
   const getMotionToken = useCallback(() => motionTokenRef.current, []);
 
@@ -405,15 +437,13 @@ export default function Game() {
           colorIndex,
           stepDurationMs: reducedMotion ? 36 : STEP_MS,
           motionToken,
+          cellSize: boardCellSize,
+          boardPad: boardPadLocked,
+          largeArrows: settings.largeArrows,
         },
       ]);
     });
   };
-
-  const idleArrowIds = useMemo(
-    () => new Set(arrows.filter((a) => a.status === "idle").map((a) => a.id)),
-    [arrows]
-  );
 
   const cellTapTargets = useMemo(() => {
     const targets: {
@@ -426,7 +456,7 @@ export default function Game() {
     for (const a of arrows) {
       if (a.status !== "idle") continue;
       for (const cell of a.cells) {
-        const key = `${cell.row},${cell.col}`;
+        const key = cellKey(cell.row, cell.col);
         if (seen.has(key)) continue;
         seen.add(key);
         targets.push({
@@ -791,8 +821,16 @@ export default function Game() {
     }
   };
 
-  const onRestart = () => {
+  const onRestart = async () => {
     haptic("selection");
+    retryCountRef.current += 1;
+    try {
+      if (!ents?.removeAds && retryCountRef.current % 2 === 0) {
+        await presentInterstitialAd();
+      }
+    } catch {
+      // never block restart
+    }
     setResetSignal((s) => s + 1);
   };
 
@@ -898,10 +936,10 @@ export default function Game() {
             pointerEvents="none"
             style={{
               position: "absolute",
-              left: boardPad + c * cellSize,
-              top: boardPad + r * cellSize,
-              width: cellSize,
-              height: cellSize,
+              left: boardPadLocked + c * boardCellSize,
+              top: boardPadLocked + r * boardCellSize,
+              width: boardCellSize,
+              height: boardCellSize,
               borderWidth: 1,
               borderColor: colors.gridTrace,
               backgroundColor: "transparent",
@@ -916,8 +954,8 @@ export default function Game() {
               styles.gridPad,
               {
                 backgroundColor: colors.gridPad,
-                left: boardPad + c * cellSize + cellSize / 2 - 2,
-                top: boardPad + r * cellSize + cellSize / 2 - 2,
+                left: boardPadLocked + c * boardCellSize + boardCellSize / 2 - 2,
+                top: boardPadLocked + r * boardCellSize + boardCellSize / 2 - 2,
               },
             ]}
           />
@@ -928,16 +966,11 @@ export default function Game() {
   }, [
     level,
     activeCellSet,
-    boardPad,
-    cellSize,
+    boardPadLocked,
+    boardCellSize,
     colors.gridTrace,
     colors.gridPad,
   ]);
-
-  const cellHitSlop = useMemo(
-    () => Math.max(0, Math.ceil((44 - cellSize) / 2)),
-    [cellSize]
-  );
 
   if (!level) {
     return (
@@ -1095,11 +1128,11 @@ export default function Game() {
             style={[
               styles.board,
               {
-                left: boardPad,
-                top: boardPad,
+                left: boardPadLocked,
+                top: boardPadLocked,
                 width: boardW,
                 height: boardH,
-                backgroundColor: "transparent",
+                backgroundColor: colors.board,
                 borderColor: colors.border,
                 borderWidth: level.isSpecialShape ? 0 : 1,
               },
@@ -1109,7 +1142,7 @@ export default function Game() {
           />
           {gridLines}
           {arrows.map((a) =>
-            slidingIdsRef.current.has(a.id) ? null : (
+            slidingIdSet.has(a.id) ? null : (
               <BoardArrowView
                 key={a.id}
                 visualCells={a.visualCells}
@@ -1119,8 +1152,8 @@ export default function Game() {
                 fade={a.fade}
                 rotateShake={a.rotateShake}
                 isHinted={hintHighlight === a.id}
-                cellSize={cellSize}
-                boardPad={boardPad}
+                cellSize={boardCellSize}
+                boardPad={boardPadLocked}
                 colorBlindSafe={settings.colorBlindSafe}
                 largeArrows={settings.largeArrows}
               />
@@ -1132,32 +1165,29 @@ export default function Game() {
               spec={slide}
               motionToken={slide.motionToken}
               getMotionToken={getMotionToken}
-              cellSize={cellSize}
-              boardPad={boardPad}
               colorBlindSafe={settings.colorBlindSafe}
-              largeArrows={settings.largeArrows}
               onFrame={handleSlideFrame}
               onComplete={handleSlideComplete}
             />
           ))}
-          {/* Full grid-cell tap targets (easier than tapping thin arrow strokes) */}
           {cellTapTargets.map(({ row, col, arrowId, direction }) => (
-            <Pressable
+            <CellPressable
               key={`tap-${row}-${col}`}
               testID={`cell-${row}-${col}`}
               accessibilityRole="button"
               accessibilityLabel={`Arrow pointing ${directionLabel[direction]}, row ${row + 1} column ${col + 1}`}
               accessibilityHint="Double tap to fire this arrow"
               onPress={() => fireArrowById(arrowId)}
-              disabled={status !== "playing" || !idleArrowIds.has(arrowId)}
-              hitSlop={cellHitSlop}
+              disabled={status !== "playing"}
+              hitSlop={0}
+              android_ripple={{ color: "transparent" }}
               style={[
                 styles.cellTap,
                 {
-                  left: boardPad + col * cellSize,
-                  top: boardPad + row * cellSize,
-                  width: cellSize,
-                  height: cellSize,
+                  left: boardPadLocked + col * boardCellSize,
+                  top: boardPadLocked + row * boardCellSize,
+                  width: boardCellSize,
+                  height: boardCellSize,
                 },
               ]}
             />
@@ -1391,8 +1421,9 @@ const styles = StyleSheet.create({
   cellTap: {
     position: "absolute",
     backgroundColor: "transparent",
-    zIndex: 10,
-    elevation: 12,
+    zIndex: 100,
+    // Elevation on every cell stacks Android drop-shadows toward the bottom row.
+    ...(Platform.OS === "android" ? { elevation: 0 } : {}),
   },
   actionBar: {
     flexDirection: "row",

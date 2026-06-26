@@ -1,9 +1,18 @@
 import { Pressable, type PressableProps } from "react-native";
 
-/**
- * Thin wrapper around RN's Pressable so we have one place to adjust touch
- * behavior across the app if platform-specific workarounds are needed.
- */
-export function AppPressable(props: PressableProps) {
-  return <Pressable {...props} />;
+type Props = PressableProps;
+
+/** Reliable taps on Android and Expo Go — always Pressable. */
+export function AppPressable({ style, onPress, onPressIn, children, ...rest }: Props) {
+  return (
+    <Pressable
+      style={style}
+      onPress={onPress}
+      onPressIn={onPressIn}
+      android_ripple={{ color: "rgba(255,255,255,0.08)", borderless: false }}
+      {...rest}
+    >
+      {children}
+    </Pressable>
+  );
 }

@@ -30,6 +30,11 @@ local.properties
 
 # Metro
 .metro-health-check*
+.metro-cache/
+
+# local bundle analysis output
+.bundle-analysis/
+.bundle-check/
 
 # debug
 npm-debug.*

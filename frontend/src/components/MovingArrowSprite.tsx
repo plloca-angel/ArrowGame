@@ -15,14 +15,15 @@ export type SlideSpec = {
   segmentCount: number;
   colorIndex: number;
   stepDurationMs: number;
+  /** Frozen at slide start — must not change mid-animation. */
+  cellSize: number;
+  boardPad: number;
+  largeArrows: boolean;
 };
 
 type Props = {
   spec: SlideSpec;
-  cellSize: number;
-  boardPad: number;
   colorBlindSafe: boolean;
-  largeArrows: boolean;
   motionToken: number;
   getMotionToken: () => number;
   onFrame: (
@@ -43,10 +44,7 @@ type Props = {
  */
 export function MovingArrowSprite({
   spec,
-  cellSize,
-  boardPad,
   colorBlindSafe,
-  largeArrows,
   motionToken,
   getMotionToken,
   onFrame,
@@ -60,13 +58,11 @@ export function MovingArrowSprite({
         spec.track,
         spec.totalSteps,
         spec.segmentCount,
-        cellSize,
-        boardPad,
-      largeArrows
-    ),
-    // Slide spec is fixed for the lifetime of this sprite (React key = spec.id).
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed mount, do not rebake mid-slide
-    [cellSize, boardPad, largeArrows]
+        spec.cellSize,
+        spec.boardPad,
+        spec.largeArrows
+      ),
+    [spec]
   );
 
   const trace = getNeonTrace(spec.colorIndex, colorBlindSafe);
