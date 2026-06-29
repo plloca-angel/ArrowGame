@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { Platform, View, StyleSheet } from "react-native";
 import Svg, { Path, Polygon } from "react-native-svg";
 import type { SlideAnimationData } from "./NeonPathArrow";
@@ -40,7 +40,7 @@ export function SlidingArrowView({
   const { left, top, width, height } = viewport;
   const first = frames[0];
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const startedAt = performance.now();
     let raf = 0;
     let cancelled = false;
@@ -95,7 +95,6 @@ export function SlidingArrowView({
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
-      // Always finish so slide promises and arrow state cannot hang.
       if (!finished) {
         finish();
       }

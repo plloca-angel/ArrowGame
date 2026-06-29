@@ -163,9 +163,16 @@ export function pathHitBox(
   cells: GridCell[],
   cellSize: number,
   boardPad: number,
-  direction: Direction
+  direction: Direction,
+  strokeScale = 1
 ) {
-  return computeArrowGeometry(cells, direction, cellSize, boardPad).bounds;
+  return computeArrowGeometry(
+    cells,
+    direction,
+    cellSize,
+    boardPad,
+    strokeScale
+  ).bounds;
 }
 
 /** One pre-baked frame of a sliding arrow (path strings only — no React work per tick). */

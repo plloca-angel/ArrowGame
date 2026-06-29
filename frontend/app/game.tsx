@@ -16,6 +16,7 @@ import {
   ActivityIndicator,
   Platform,
   Pressable as CellPressable,
+  unstable_batchedUpdates,
 } from "react-native";
 import { AppPressable as Pressable } from "../src/components/AppPressable";
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
@@ -44,7 +45,7 @@ import {
 import { RADIUS, SPACING } from "../src/theme";
 import { AdBanner } from "../src/AdBanner";
 import { presentInterstitialAd } from "../src/ads/interstitial";
-import { NeonPathArrow, getNeonTrace, pathHitBox } from "../src/components/NeonPathArrow";
+import { NeonPathArrow, getNeonTrace, pathHitBox, buildSlideAnimation } from "../src/components/NeonPathArrow";
 import {
   MovingArrowSprite,
   type SlideSpec,
@@ -117,6 +118,7 @@ type BoardArrowViewProps = {
   fade: Animated.Value;
   rotateShake: Animated.Value;
   isHinted: boolean;
+  coveredBySlide: boolean;
   cellSize: number;
   boardPad: number;
   colorBlindSafe: boolean;
@@ -138,6 +140,7 @@ const BoardArrowView = memo(function BoardArrowView({
   fade,
   rotateShake,
   isHinted,
+  coveredBySlide,
   cellSize,
   boardPad,
   colorBlindSafe,
@@ -155,7 +158,14 @@ const BoardArrowView = memo(function BoardArrowView({
       : isHinted
       ? ARROW_GLOW.hint
       : getNeonTrace(colorIndex, colorBlindSafe);
-  const hit = pathHitBox(visualCells, cellSize, boardPad, direction);
+  const strokeScale = largeArrows ? 1.15 : 1;
+  const hit = pathHitBox(
+    visualCells,
+    cellSize,
+    boardPad,
+    direction,
+    strokeScale
+  );
 
   return (
     <Animated.View
@@ -167,7 +177,7 @@ const BoardArrowView = memo(function BoardArrowView({
           width: hit.width,
           height: hit.height,
           transform: [{ rotate: rotation }],
-          opacity: fade,
+          opacity: coveredBySlide ? 0 : fade,
           pointerEvents: "none",
         },
       ]}
@@ -302,14 +312,15 @@ export default function Game() {
   const slideResolversRef = useRef<Map<string, () => void>>(new Map());
   const [activeSlides, setActiveSlides] = useState<ActiveSlide[]>([]);
   const activeSlidesRef = useRef<ActiveSlide[]>([]);
-  /** Hides the static arrow the instant a tap registers, before the slide sprite mounts. */
-  const [pendingLaunchIds, setPendingLaunchIds] = useState<Set<string>>(
-    () => new Set()
-  );
 
   useEffect(() => {
     activeSlidesRef.current = activeSlides;
   }, [activeSlides]);
+
+  const slidingIdSet = useMemo(
+    () => new Set(activeSlides.map((s) => s.id)),
+    [activeSlides]
+  );
 
   // Only remeasure when the level (and thus board dimensions) actually changes.
   // Retrying the same level must NOT wipe the locked layout, or arrows flash at
@@ -333,12 +344,6 @@ export default function Game() {
     );
   }, [boardSpace, cellSize, boardPad, activeSlides.length]);
 
-  const slidingIdSet = useMemo(() => {
-    const ids = new Set(activeSlides.map((s) => s.id));
-    for (const id of pendingLaunchIds) ids.add(id);
-    return ids;
-  }, [activeSlides, pendingLaunchIds]);
-
   const getMotionToken = useCallback(() => motionTokenRef.current, []);
 
   const invalidateMotion = () => {
@@ -353,27 +358,8 @@ export default function Game() {
     }
     slideResolversRef.current.clear();
     setActiveSlides([]);
-    setPendingLaunchIds(new Set());
     activeMovesRef.current = 0;
     firingIdsRef.current.clear();
-  };
-
-  const claimLaunchHide = (arrowId: string) => {
-    setPendingLaunchIds((prev) => {
-      if (prev.has(arrowId)) return prev;
-      const next = new Set(prev);
-      next.add(arrowId);
-      return next;
-    });
-  };
-
-  const releaseLaunchHide = (arrowId: string) => {
-    setPendingLaunchIds((prev) => {
-      if (!prev.has(arrowId)) return prev;
-      const next = new Set(prev);
-      next.delete(arrowId);
-      return next;
-    });
   };
 
   const trackAnimation = (anim: Animated.CompositeAnimation) => {
@@ -496,11 +482,20 @@ export default function Game() {
     motionToken: number
   ): Promise<void> => {
     if (motionToken !== motionTokenRef.current) {
-      releaseLaunchHide(arrowId);
       return Promise.resolve();
     }
 
     const track = buildMovementTrack(startCells, direction, totalSteps);
+    const animation = buildSlideAnimation(
+      startCells,
+      direction,
+      track,
+      totalSteps,
+      startCells.length,
+      boardCellSize,
+      boardPadLocked,
+      settings.largeArrows
+    );
     const slideTimeoutMs = Math.max(
       2500,
       (reducedMotion ? 36 : STEP_MS) * Math.max(1, totalSteps) + 800
@@ -515,19 +510,15 @@ export default function Game() {
         resolve();
       };
 
-      // Fallback: if the native slide never reports completion (dropped frames,
-      // unmount race), tear the sprite down ourselves so no arrow stays stranded.
       const timer = setTimeout(() => {
         slidingIdsRef.current.delete(arrowId);
         setActiveSlides((prev) => prev.filter((s) => s.id !== arrowId));
         slideResolversRef.current.delete(arrowId);
-        releaseLaunchHide(arrowId);
         finish();
       }, slideTimeoutMs);
 
       slidingIdsRef.current.add(arrowId);
       slideResolversRef.current.set(arrowId, finish);
-      releaseLaunchHide(arrowId);
       setActiveSlides((prev) => [
         ...prev,
         {
@@ -543,6 +534,7 @@ export default function Game() {
           cellSize: boardCellSize,
           boardPad: boardPadLocked,
           largeArrows: settings.largeArrows,
+          animation,
         },
       ]);
     });
@@ -672,10 +664,10 @@ export default function Game() {
     );
     if (!arrow) return;
     firingIdsRef.current.add(arrowId);
-    claimLaunchHide(arrowId);
-    void executeFireArrow(arrow).finally(() => {
-      firingIdsRef.current.delete(arrowId);
-      releaseLaunchHide(arrowId);
+    unstable_batchedUpdates(() => {
+      void executeFireArrow(arrow).finally(() => {
+        firingIdsRef.current.delete(arrowId);
+      });
     });
   };
 
@@ -826,7 +818,7 @@ export default function Game() {
             motionToken
           );
         } else {
-          releaseLaunchHide(live.id);
+          // Blocked in place — keep static arrow visible for the shake.
         }
 
         applyArrowsUpdate((prev) =>
@@ -881,7 +873,6 @@ export default function Game() {
     bumpMoves();
     haptic("light");
     activeMovesRef.current += 1;
-    setHintHighlight(null);
 
     const live: ArrowState = {
       ...idleArrow,
@@ -900,6 +891,7 @@ export default function Game() {
     applyArrowsUpdate((prev) =>
       prev.map((a, i) => (i === claimIdx ? live : a))
     );
+    setHintHighlight(null);
 
     let escapeNeedsFinalize = true;
     try {
@@ -1283,8 +1275,7 @@ export default function Game() {
             testID="game-board"
           />
           {gridLines}
-          {arrows.map((a) =>
-            slidingIdSet.has(a.id) ? null : (
+          {arrows.map((a) => (
               <BoardArrowView
                 key={a.id}
                 visualCells={a.visualCells}
@@ -1294,13 +1285,13 @@ export default function Game() {
                 fade={a.fade}
                 rotateShake={a.rotateShake}
                 isHinted={hintHighlight === a.id}
+                coveredBySlide={slidingIdSet.has(a.id)}
                 cellSize={boardCellSize}
                 boardPad={boardPadLocked}
                 colorBlindSafe={settings.colorBlindSafe}
                 largeArrows={settings.largeArrows}
               />
-            )
-          )}
+          ))}
           {activeSlides.map((slide) => (
             <MovingArrowSprite
               key={slide.id}

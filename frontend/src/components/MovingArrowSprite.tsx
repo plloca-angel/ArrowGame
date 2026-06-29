@@ -1,10 +1,10 @@
-import { useMemo } from "react";
 import { Direction, GridCell } from "../levelModel";
 import {
-  buildSlideAnimation,
   getNeonTrace,
 } from "./NeonPathArrow";
 import { SlidingArrowView } from "./SlidingArrowView";
+
+import type { SlideAnimationData } from "./NeonPathArrow";
 
 export type SlideSpec = {
   id: string;
@@ -19,6 +19,8 @@ export type SlideSpec = {
   cellSize: number;
   boardPad: number;
   largeArrows: boolean;
+  /** Pre-baked on tap so the first frame paints without useMemo jank. */
+  animation: SlideAnimationData;
 };
 
 type Props = {
@@ -50,28 +52,13 @@ export function MovingArrowSprite({
   onFrame,
   onComplete,
 }: Props) {
-  const animation = useMemo(
-    () =>
-      buildSlideAnimation(
-        spec.startCells,
-        spec.direction,
-        spec.track,
-        spec.totalSteps,
-        spec.segmentCount,
-        spec.cellSize,
-        spec.boardPad,
-        spec.largeArrows
-      ),
-    [spec]
-  );
-
   const trace = getNeonTrace(spec.colorIndex, colorBlindSafe);
   const durationMs = spec.stepDurationMs * spec.totalSteps;
-  const { frames } = animation;
+  const { frames } = spec.animation;
 
   return (
     <SlidingArrowView
-      animation={animation}
+      animation={spec.animation}
       color={trace.color}
       glow={trace.glow}
       durationMs={durationMs}
