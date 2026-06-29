@@ -20,6 +20,7 @@
     "prebuild:levels": "tsx scripts/prebuild-levels.ts 200 20",
     "split:prebuilt-chunks": "tsx scripts/split-prebuilt-chunks.ts 20",
     "verify:prebuilt-chunks": "tsx scripts/verify-prebuilt-chunks.ts",
+    "verify:arrow-grid": "tsx scripts/verify-arrow-grid-alignment.ts",
     "repair:prebuilt-chunks": "tsx scripts/repair-prebuilt-chunks.ts",
     "extend:prebuilt-chunks": "tsx scripts/extend-prebuilt-chunks.ts",
     "demo:chunk-load": "tsx scripts/demo-chunk-load.ts",
