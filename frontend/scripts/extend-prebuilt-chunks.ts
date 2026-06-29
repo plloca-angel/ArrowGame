@@ -19,16 +19,17 @@ import {
 import { verifyLevelMoveRules } from "../src/levelSolvability";
 import {
   buildLevelFresh,
-  buildTrivialSolvableLevel,
+  buildConstructiveLevel,
   isLevelGenTimeout,
   repairLevelDirections,
   LEVEL_CACHE_VERSION,
 } from "../src/levels";
 
-// Per-shape-bump generation budget. Non-special levels use a single bump, so
-// this is the effective per-level cap before falling back to the guaranteed
-// builder; special shapes may try a few bumps. Keeps the build from hanging.
-const PER_LEVEL_BUDGET_MS = 20_000;
+// Per-shape-bump generation budget. The random generator gives organic levels
+// where it succeeds quickly; anything slower falls back to the constructive
+// builder (guaranteed-solvable, multi-cell, instant), so the build is bounded
+// and never produces filler. Sized to capture quick random successes only.
+const PER_LEVEL_BUDGET_MS = 8_000;
 
 const prebuiltDir = path.join(__dirname, "..", "src", "data", "prebuilt");
 const manifestPath = path.join(prebuiltDir, "manifest.json");
@@ -82,14 +83,14 @@ function buildValidLevel(id: number): BuildResult {
     }
   }
 
-  const trivial = buildTrivialSolvableLevel(id);
-  const trivialErrors = collectErrors(trivial, id);
-  if (trivialErrors.length > 0) {
+  const constructive = buildConstructiveLevel(id);
+  const constructiveErrors = collectErrors(constructive, id);
+  if (constructiveErrors.length > 0) {
     throw new Error(
-      `Guaranteed fallback for level ${id} failed validation: ${trivialErrors.join("; ")}`
+      `Constructive fallback for level ${id} failed validation: ${constructiveErrors.join("; ")}`
     );
   }
-  return { level: trivial, fallback: true };
+  return { level: constructive, fallback: true };
 }
 
 function chunkFileName(index: number): string {

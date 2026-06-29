@@ -1,7 +1,7 @@
 {
   "version": 23,
   "chunkSize": 20,
-  "maxLevel": 200,
+  "maxLevel": 600,
   "chunks": [
     {
       "index": 1,
@@ -62,6 +62,126 @@
       "start": 181,
       "end": 200,
       "file": "chunk-010.json"
+    },
+    {
+      "index": 11,
+      "start": 201,
+      "end": 220,
+      "file": "chunk-011.json"
+    },
+    {
+      "index": 12,
+      "start": 221,
+      "end": 240,
+      "file": "chunk-012.json"
+    },
+    {
+      "index": 13,
+      "start": 241,
+      "end": 260,
+      "file": "chunk-013.json"
+    },
+    {
+      "index": 14,
+      "start": 261,
+      "end": 280,
+      "file": "chunk-014.json"
+    },
+    {
+      "index": 15,
+      "start": 281,
+      "end": 300,
+      "file": "chunk-015.json"
+    },
+    {
+      "index": 16,
+      "start": 301,
+      "end": 320,
+      "file": "chunk-016.json"
+    },
+    {
+      "index": 17,
+      "start": 321,
+      "end": 340,
+      "file": "chunk-017.json"
+    },
+    {
+      "index": 18,
+      "start": 341,
+      "end": 360,
+      "file": "chunk-018.json"
+    },
+    {
+      "index": 19,
+      "start": 361,
+      "end": 380,
+      "file": "chunk-019.json"
+    },
+    {
+      "index": 20,
+      "start": 381,
+      "end": 400,
+      "file": "chunk-020.json"
+    },
+    {
+      "index": 21,
+      "start": 401,
+      "end": 420,
+      "file": "chunk-021.json"
+    },
+    {
+      "index": 22,
+      "start": 421,
+      "end": 440,
+      "file": "chunk-022.json"
+    },
+    {
+      "index": 23,
+      "start": 441,
+      "end": 460,
+      "file": "chunk-023.json"
+    },
+    {
+      "index": 24,
+      "start": 461,
+      "end": 480,
+      "file": "chunk-024.json"
+    },
+    {
+      "index": 25,
+      "start": 481,
+      "end": 500,
+      "file": "chunk-025.json"
+    },
+    {
+      "index": 26,
+      "start": 501,
+      "end": 520,
+      "file": "chunk-026.json"
+    },
+    {
+      "index": 27,
+      "start": 521,
+      "end": 540,
+      "file": "chunk-027.json"
+    },
+    {
+      "index": 28,
+      "start": 541,
+      "end": 560,
+      "file": "chunk-028.json"
+    },
+    {
+      "index": 29,
+      "start": 561,
+      "end": 580,
+      "file": "chunk-029.json"
+    },
+    {
+      "index": 30,
+      "start": 581,
+      "end": 600,
+      "file": "chunk-030.json"
     }
   ]
 }

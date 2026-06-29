@@ -74,6 +74,38 @@ export function canArrowEscapeNow(
   return flight.result === "escape";
 }
 
+/**
+ * Hot-path escape test against a caller-maintained occupancy set (which must
+ * already exclude the arrow being tested). Lets greedy/DFS solvers reuse one
+ * incrementally-updated Set instead of rebuilding occupancy on every check —
+ * the dominant cost when generating large boards. Behavior matches the `level`
+ * branch of canArrowEscapeNow.
+ */
+function escapesWithOccupancy(
+  arrow: ArrowDef,
+  occ: Set<string>,
+  surface: ReturnType<typeof getLevelFlightSurface>,
+  travelLimit: number
+): boolean {
+  const escapeExtra = Math.max(
+    ESCAPE_EXTRA_CELLS,
+    Math.ceil(arrow.cells.length * 0.75)
+  );
+  const flight = simulateSnakeFlight(
+    arrow.cells,
+    arrow.direction,
+    surface.isPlayable,
+    (r, c) => occ.has(cellKey(r, c)),
+    escapeExtra,
+    travelLimit,
+    {
+      inBounds: surface.inBounds,
+      blockInteriorVoids: surface.blockInteriorVoids,
+    }
+  );
+  return flight.result === "escape";
+}
+
 /** Every playable cell covered exactly once. */
 export function verifyFullGridFill(level: Level): boolean {
   const active = getLevelActiveCellSet(level);
@@ -117,27 +149,29 @@ export function findSolveOrder(
   level: Level,
   maxNodes = 120_000
 ): number[] | null {
-  const activeCells = getLevelActiveCellSet(level);
   const n = level.arrows.length;
+  if (n === 0) return [];
+  const surface = getLevelFlightSurface(level);
+  const travelLimit = level.rows + level.cols;
   const present = new Set<number>(Array.from({ length: n }, (_, i) => i));
   const order: number[] = [];
   let nodes = 0;
+
+  // One occupancy set, mutated as arrows are tentatively removed/restored.
+  const occ = new Set<string>();
+  for (let i = 0; i < n; i++) {
+    for (const c of level.arrows[i].cells) occ.add(cellKey(c.row, c.col));
+  }
 
   const dfs = (): boolean => {
     if (++nodes > maxNodes) return false;
     if (order.length === n) return true;
     for (let i = 0; i < n; i++) {
       if (!present.has(i)) continue;
-      if (
-        !canArrowEscapeNow(
-          level.arrows[i],
-          level.arrows,
-          i,
-          present,
-          activeCells,
-          level
-        )
-      ) {
+      const arrow = level.arrows[i];
+      for (const c of arrow.cells) occ.delete(cellKey(c.row, c.col));
+      if (!escapesWithOccupancy(arrow, occ, surface, travelLimit)) {
+        for (const c of arrow.cells) occ.add(cellKey(c.row, c.col));
         continue;
       }
       order.push(i);
@@ -145,6 +179,7 @@ export function findSolveOrder(
       if (dfs()) return true;
       present.add(i);
       order.pop();
+      for (const c of arrow.cells) occ.add(cellKey(c.row, c.col));
     }
     return false;
   };
@@ -154,28 +189,29 @@ export function findSolveOrder(
 
 /** Fast solvability check for large / special boards during generation. */
 export function verifyGreedyClearBoard(level: Level): boolean {
-  const activeCells = getLevelActiveCellSet(level);
   const n = level.arrows.length;
+  if (n === 0) return true;
+  const surface = getLevelFlightSurface(level);
+  const travelLimit = level.rows + level.cols;
   const present = new Set<number>(Array.from({ length: n }, (_, i) => i));
+
+  const occ = new Set<string>();
+  for (let i = 0; i < n; i++) {
+    for (const c of level.arrows[i].cells) occ.add(cellKey(c.row, c.col));
+  }
 
   while (present.size > 0) {
     let removed = false;
     for (let i = 0; i < n; i++) {
       if (!present.has(i)) continue;
-      if (
-        canArrowEscapeNow(
-          level.arrows[i],
-          level.arrows,
-          i,
-          present,
-          activeCells,
-          level
-        )
-      ) {
+      const arrow = level.arrows[i];
+      for (const c of arrow.cells) occ.delete(cellKey(c.row, c.col));
+      if (escapesWithOccupancy(arrow, occ, surface, travelLimit)) {
         present.delete(i);
         removed = true;
-        break;
+        break; // leave this arrow's cells cleared from occupancy
       }
+      for (const c of arrow.cells) occ.add(cellKey(c.row, c.col));
     }
     if (!removed) return false;
   }

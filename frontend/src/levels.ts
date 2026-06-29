@@ -985,6 +985,113 @@ export function buildTrivialSolvableLevel(id: number): Level {
 }
 
 /**
+ * Constructive, guaranteed-solvable generator for full rectangles. Builds the
+ * level in reverse solve order: arrows are placed interior-first, each pointing
+ * toward its nearest edge so its exit ray only crosses cells strictly closer to
+ * the edge — which are placed later and so are still empty. Firing outermost
+ * arrows first therefore always clears the board (no search, never hangs).
+ * Produces multi-cell snakes, varied directions, and blocked starts. Used as a
+ * high-quality fallback when the random generator can't satisfy a board.
+ */
+export function buildConstructiveLevel(id: number): Level {
+  const key = Math.max(1, id);
+  const { rows, cols } = getLevelDimensions(key);
+  const rand = mulberry32(key * 2654435761 + 17);
+
+  const distOf = (r: number, c: number) =>
+    Math.min(r, c, rows - 1 - r, cols - 1 - c);
+
+  const nearestDirs = (r: number, c: number): Direction[] => {
+    const d = distOf(r, c);
+    const out: Direction[] = [];
+    if (r === d) out.push("up");
+    if (rows - 1 - r === d) out.push("down");
+    if (c === d) out.push("left");
+    if (cols - 1 - c === d) out.push("right");
+    return out;
+  };
+
+  const onExitRay = (
+    hr: number,
+    hc: number,
+    dir: Direction,
+    br: number,
+    bc: number
+  ): boolean => {
+    const [dr, dc] = DIR_VEC[dir];
+    let r = hr + dr;
+    let c = hc + dc;
+    while (r >= 0 && r < rows && c >= 0 && c < cols) {
+      if (r === br && c === bc) return true;
+      r += dr;
+      c += dc;
+    }
+    return false;
+  };
+
+  // All cells, shuffled then ordered by distance-to-edge descending (interior
+  // first) so each placed arrow's exit ray crosses only not-yet-placed cells.
+  const cells: { r: number; c: number; d: number }[] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) cells.push({ r, c, d: distOf(r, c) });
+  }
+  for (let i = cells.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+  }
+  cells.sort((a, b) => b.d - a.d);
+
+  const occupied = new Set<string>();
+  const placed: ArrowDef[] = [];
+
+  for (const { r, c } of cells) {
+    if (occupied.has(cellKey(r, c))) continue;
+    const headDist = distOf(r, c);
+    const dirOptions = nearestDirs(r, c);
+    const dir = dirOptions[Math.floor(rand() * dirOptions.length)];
+
+    // Longer snakes on the outer rings keep the count of arrows that can escape
+    // immediately low (preserving "blocked starts"); interior arrows stay short.
+    const minLen = headDist === 0 ? 2 : 1;
+    const lenCap = headDist === 0 ? 5 : headDist === 1 ? 4 : 3;
+    const maxLen = minLen + Math.floor(rand() * (lenCap - minLen + 1));
+
+    const body: GridCell[] = [{ row: r, col: c }];
+    const used = new Set<string>([cellKey(r, c)]);
+    let cur = { row: r, col: c };
+
+    while (body.length < maxLen) {
+      const cand: GridCell[] = [];
+      for (const dd of ["up", "down", "left", "right"] as Direction[]) {
+        const [dr, dc] = DIR_VEC[dd];
+        const nr = cur.row + dr;
+        const nc = cur.col + dc;
+        if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+        const k = cellKey(nr, nc);
+        if (occupied.has(k) || used.has(k)) continue;
+        // Keep the body out of the exit region (strictly-closer cells) and off
+        // the head's exit ray so the solvability invariant holds.
+        if (distOf(nr, nc) < headDist) continue;
+        if (onExitRay(r, c, dir, nr, nc)) continue;
+        cand.push({ row: nr, col: nc });
+      }
+      if (cand.length === 0) break;
+      const next = cand[Math.floor(rand() * cand.length)];
+      body.push(next);
+      used.add(cellKey(next.row, next.col));
+      cur = next;
+    }
+
+    for (const cell of body) occupied.add(cellKey(cell.row, cell.col));
+    // Arrow cells are ordered tail -> head (head fires/leads), so reverse since
+    // body[0] is the head cell.
+    placed.push({ cells: [...body].reverse(), direction: dir });
+  }
+
+  return levelFromPlaced(key, rows, cols, placed, null, false);
+}
+
+/**
  * Runs the procedural generator from scratch, bypassing both the session cache
  * and the prebuilt bundle. Used by the build-time prebuild script so re-running
  * it always regenerates rather than reading back its own previous output.

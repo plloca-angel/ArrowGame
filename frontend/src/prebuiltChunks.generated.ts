@@ -25,6 +25,46 @@ export function loadPrebuiltChunk(index: number): PrebuiltChunk {
       return require("./data/prebuilt/chunk-009.json") as PrebuiltChunk;
     case 10:
       return require("./data/prebuilt/chunk-010.json") as PrebuiltChunk;
+    case 11:
+      return require("./data/prebuilt/chunk-011.json") as PrebuiltChunk;
+    case 12:
+      return require("./data/prebuilt/chunk-012.json") as PrebuiltChunk;
+    case 13:
+      return require("./data/prebuilt/chunk-013.json") as PrebuiltChunk;
+    case 14:
+      return require("./data/prebuilt/chunk-014.json") as PrebuiltChunk;
+    case 15:
+      return require("./data/prebuilt/chunk-015.json") as PrebuiltChunk;
+    case 16:
+      return require("./data/prebuilt/chunk-016.json") as PrebuiltChunk;
+    case 17:
+      return require("./data/prebuilt/chunk-017.json") as PrebuiltChunk;
+    case 18:
+      return require("./data/prebuilt/chunk-018.json") as PrebuiltChunk;
+    case 19:
+      return require("./data/prebuilt/chunk-019.json") as PrebuiltChunk;
+    case 20:
+      return require("./data/prebuilt/chunk-020.json") as PrebuiltChunk;
+    case 21:
+      return require("./data/prebuilt/chunk-021.json") as PrebuiltChunk;
+    case 22:
+      return require("./data/prebuilt/chunk-022.json") as PrebuiltChunk;
+    case 23:
+      return require("./data/prebuilt/chunk-023.json") as PrebuiltChunk;
+    case 24:
+      return require("./data/prebuilt/chunk-024.json") as PrebuiltChunk;
+    case 25:
+      return require("./data/prebuilt/chunk-025.json") as PrebuiltChunk;
+    case 26:
+      return require("./data/prebuilt/chunk-026.json") as PrebuiltChunk;
+    case 27:
+      return require("./data/prebuilt/chunk-027.json") as PrebuiltChunk;
+    case 28:
+      return require("./data/prebuilt/chunk-028.json") as PrebuiltChunk;
+    case 29:
+      return require("./data/prebuilt/chunk-029.json") as PrebuiltChunk;
+    case 30:
+      return require("./data/prebuilt/chunk-030.json") as PrebuiltChunk;
     default:
       throw new Error(`Unknown prebuilt chunk index ${index}`);
   }
