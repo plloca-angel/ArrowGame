@@ -73,15 +73,18 @@ export function SlidingArrowView({
       }
 
       const elapsed = now - startedAt;
-      const t = Math.min(1, elapsed / Math.max(1, durationMs));
+      const linearT = Math.min(1, elapsed / Math.max(1, durationMs));
       const idx =
         frames.length <= 1
           ? 0
-          : Math.min(frames.length - 1, Math.round(t * (frames.length - 1)));
+          : Math.min(
+              frames.length - 1,
+              Math.floor(linearT * (frames.length - 1))
+            );
 
       applyFrame(idx);
 
-      if (t < 1) {
+      if (linearT < 1) {
         raf = requestAnimationFrame(tick);
       } else {
         finish();

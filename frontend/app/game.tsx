@@ -145,7 +145,7 @@ const BoardArrowView = memo(function BoardArrowView({
 }: BoardArrowViewProps) {
   const rotation = rotateShake.interpolate({
     inputRange: [-1, 0, 1],
-    outputRange: ["-12deg", "0deg", "12deg"],
+    outputRange: ["-10deg", "0deg", "10deg"],
   });
   const trace =
     status === "broken"
@@ -302,6 +302,10 @@ export default function Game() {
   const slideResolversRef = useRef<Map<string, () => void>>(new Map());
   const [activeSlides, setActiveSlides] = useState<ActiveSlide[]>([]);
   const activeSlidesRef = useRef<ActiveSlide[]>([]);
+  /** Hides the static arrow the instant a tap registers, before the slide sprite mounts. */
+  const [pendingLaunchIds, setPendingLaunchIds] = useState<Set<string>>(
+    () => new Set()
+  );
 
   useEffect(() => {
     activeSlidesRef.current = activeSlides;
@@ -329,10 +333,11 @@ export default function Game() {
     );
   }, [boardSpace, cellSize, boardPad, activeSlides.length]);
 
-  const slidingIdSet = useMemo(
-    () => new Set(activeSlides.map((s) => s.id)),
-    [activeSlides]
-  );
+  const slidingIdSet = useMemo(() => {
+    const ids = new Set(activeSlides.map((s) => s.id));
+    for (const id of pendingLaunchIds) ids.add(id);
+    return ids;
+  }, [activeSlides, pendingLaunchIds]);
 
   const getMotionToken = useCallback(() => motionTokenRef.current, []);
 
@@ -348,8 +353,27 @@ export default function Game() {
     }
     slideResolversRef.current.clear();
     setActiveSlides([]);
+    setPendingLaunchIds(new Set());
     activeMovesRef.current = 0;
     firingIdsRef.current.clear();
+  };
+
+  const claimLaunchHide = (arrowId: string) => {
+    setPendingLaunchIds((prev) => {
+      if (prev.has(arrowId)) return prev;
+      const next = new Set(prev);
+      next.add(arrowId);
+      return next;
+    });
+  };
+
+  const releaseLaunchHide = (arrowId: string) => {
+    setPendingLaunchIds((prev) => {
+      if (!prev.has(arrowId)) return prev;
+      const next = new Set(prev);
+      next.delete(arrowId);
+      return next;
+    });
   };
 
   const trackAnimation = (anim: Animated.CompositeAnimation) => {
@@ -462,7 +486,7 @@ export default function Game() {
     []
   );
 
-  const animateSnakeAlongPath = async (
+  const beginArrowSlide = (
     arrowId: string,
     startCells: GridCell[],
     direction: Direction,
@@ -470,8 +494,11 @@ export default function Game() {
     colorIndex: number,
     reducedMotion: boolean,
     motionToken: number
-  ) => {
-    if (motionToken !== motionTokenRef.current) return;
+  ): Promise<void> => {
+    if (motionToken !== motionTokenRef.current) {
+      releaseLaunchHide(arrowId);
+      return Promise.resolve();
+    }
 
     const track = buildMovementTrack(startCells, direction, totalSteps);
     const slideTimeoutMs = Math.max(
@@ -494,11 +521,13 @@ export default function Game() {
         slidingIdsRef.current.delete(arrowId);
         setActiveSlides((prev) => prev.filter((s) => s.id !== arrowId));
         slideResolversRef.current.delete(arrowId);
+        releaseLaunchHide(arrowId);
         finish();
       }, slideTimeoutMs);
 
       slidingIdsRef.current.add(arrowId);
       slideResolversRef.current.set(arrowId, finish);
+      releaseLaunchHide(arrowId);
       setActiveSlides((prev) => [
         ...prev,
         {
@@ -519,7 +548,9 @@ export default function Game() {
     });
   };
 
+  // Static per level — avoids re-mounting every cell pressable when one arrow fires.
   const cellTapTargets = useMemo(() => {
+    if (!level) return [];
     const targets: {
       row: number;
       col: number;
@@ -527,8 +558,8 @@ export default function Game() {
       direction: Direction;
     }[] = [];
     const seen = new Set<string>();
-    for (const a of arrows) {
-      if (a.status !== "idle") continue;
+    level.arrows.forEach((a, idx) => {
+      const arrowId = `${level.id}-${idx}`;
       for (const cell of a.cells) {
         const key = cellKey(cell.row, cell.col);
         if (seen.has(key)) continue;
@@ -536,13 +567,13 @@ export default function Game() {
         targets.push({
           row: cell.row,
           col: cell.col,
-          arrowId: a.id,
+          arrowId,
           direction: a.direction,
         });
       }
-    }
+    });
     return targets;
-  }, [arrows]);
+  }, [level?.id]);
 
   const directionLabel: Record<Direction, string> = {
     up: "up",
@@ -557,31 +588,36 @@ export default function Game() {
     motionToken: number
   ) => {
     if (reducedMotion || motionToken !== motionTokenRef.current) return;
+    rotateShake.setValue(0);
     await runTrackedAnimation(
       trackAnimation,
       Animated.sequence([
         Animated.timing(rotateShake, {
           toValue: 1,
-          duration: 45,
+          duration: 55,
+          easing: Easing.out(Easing.quad),
           useNativeDriver: true,
         }),
         Animated.timing(rotateShake, {
-          toValue: -1,
-          duration: 45,
+          toValue: -0.85,
+          duration: 65,
+          easing: Easing.inOut(Easing.quad),
           useNativeDriver: true,
         }),
         Animated.timing(rotateShake, {
-          toValue: 0.6,
-          duration: 40,
+          toValue: 0.4,
+          duration: 55,
+          easing: Easing.inOut(Easing.quad),
           useNativeDriver: true,
         }),
         Animated.timing(rotateShake, {
           toValue: 0,
-          duration: 40,
+          duration: 75,
+          easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
       ]),
-      500
+      700
     );
   };
 
@@ -636,8 +672,10 @@ export default function Game() {
     );
     if (!arrow) return;
     firingIdsRef.current.add(arrowId);
+    claimLaunchHide(arrowId);
     void executeFireArrow(arrow).finally(() => {
       firingIdsRef.current.delete(arrowId);
+      releaseLaunchHide(arrowId);
     });
   };
 
@@ -774,13 +812,11 @@ export default function Game() {
         ...idleArrow,
         status: "flying",
       };
-      applyArrowsUpdate((prev) =>
-        prev.map((a, i) => (i === claimIdx ? live : a))
-      );
 
       try {
+        let slidePromise: Promise<void> | null = null;
         if (flight.result === "collision" && flight.steps > 0) {
-          await animateSnakeAlongPath(
+          slidePromise = beginArrowSlide(
             live.id,
             startCells,
             live.direction,
@@ -789,7 +825,15 @@ export default function Game() {
             settings.reducedMotion,
             motionToken
           );
+        } else {
+          releaseLaunchHide(live.id);
         }
+
+        applyArrowsUpdate((prev) =>
+          prev.map((a, i) => (i === claimIdx ? live : a))
+        );
+
+        if (slidePromise) await slidePromise;
         if (motionToken !== motionTokenRef.current) {
           applyArrowsUpdate((prev) =>
             prev.map((a) =>
@@ -837,28 +881,30 @@ export default function Game() {
     bumpMoves();
     haptic("light");
     activeMovesRef.current += 1;
+    setHintHighlight(null);
 
     const live: ArrowState = {
       ...idleArrow,
       status: "flying",
     };
+
+    const slidePromise = beginArrowSlide(
+      live.id,
+      startCells,
+      live.direction,
+      flight.steps,
+      live.colorIndex,
+      settings.reducedMotion,
+      motionToken
+    );
     applyArrowsUpdate((prev) =>
       prev.map((a, i) => (i === claimIdx ? live : a))
     );
-    setHintHighlight(null);
 
     let escapeNeedsFinalize = true;
     try {
       if (flight.result === "escape") {
-        await animateSnakeAlongPath(
-          live.id,
-          startCells,
-          live.direction,
-          flight.steps,
-          live.colorIndex,
-          settings.reducedMotion,
-          motionToken
-        );
+        await slidePromise;
         if (
           statusRef.current !== "playing" ||
           motionToken !== motionTokenRef.current

@@ -181,7 +181,7 @@ export function buildSlideAnimation(
     totalSteps
   );
   const strokeScale = largeArrows ? 1.15 : 1;
-  const frameCount = Math.min(360, Math.max(72, Math.ceil(totalSteps * 10)));
+  const frameCount = Math.min(480, Math.max(96, Math.ceil(totalSteps * 14)));
   const frames: SlideAnimFrame[] = [];
   let minL = Infinity;
   let minT = Infinity;
