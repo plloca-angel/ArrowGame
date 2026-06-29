@@ -40,7 +40,7 @@ export function getPlayLevelSync(id: number): Level | null {
   return null;
 }
 
-/** Full loader — uses prebuilt fast path first, then procedural / daily. */
+/** Full loader — uses prebuilt fast path first, then procedural for ids > prebuilt max. */
 export async function resolvePlayLevel(id: number): Promise<Level> {
   const sync = getPlayLevelSync(id);
   if (sync) return sync;
@@ -54,8 +54,7 @@ export async function resolvePlayLevel(id: number): Promise<Level> {
 /**
  * Background pre-warm for an upcoming level. ONLY warms prebuilt levels — never
  * triggers live generation, which runs synchronously and would freeze the JS
- * thread (timer + touches) mid-play. Live levels (daily, id > prebuilt range)
- * are generated on-demand by the game screen, which shows a loading spinner.
+ * thread (timer + touches) mid-play. Daily puzzles map into the prebuilt pool.
  */
 export function primePlayLevel(id: number): void {
   if (id < 1 || id > PREBUILT_MAX_LEVEL) return;

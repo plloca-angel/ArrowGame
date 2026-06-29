@@ -103,24 +103,47 @@ export function computeArrowGeometry(
 
   let pathD = "";
   if (centers.length > 0) {
-    pathD = centers
-      .map(({ x, y }, i) => `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`)
-      .join(" ");
-    const last = centers[centers.length - 1];
-    const atHead =
-      Math.abs(last.x - hx) < 0.5 && Math.abs(last.y - hy) < 0.5;
-    if (!atHead) {
-      pathD += ` L ${hx.toFixed(1)} ${hy.toFixed(1)}`;
+    if (centers.length === 1) {
+      // Balance the glyph inside the cell — a lone head-only stub reads off-grid.
+      const tailLen = stubLen * 0.42;
+      const tailX = hx - dc * tailLen;
+      const tailY = hy - dr * tailLen;
+      pathD = `M ${tailX.toFixed(1)} ${tailY.toFixed(1)} L ${shaftEndX.toFixed(1)} ${shaftEndY.toFixed(1)}`;
+    } else {
+      pathD = centers
+        .map(({ x, y }, i) => `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`)
+        .join(" ");
+      const last = centers[centers.length - 1];
+      const atHead =
+        Math.abs(last.x - hx) < 0.5 && Math.abs(last.y - hy) < 0.5;
+      if (!atHead) {
+        pathD += ` L ${hx.toFixed(1)} ${hy.toFixed(1)}`;
+      }
+      pathD += ` L ${shaftEndX.toFixed(1)} ${shaftEndY.toFixed(1)}`;
     }
-    pathD += ` L ${shaftEndX.toFixed(1)} ${shaftEndY.toFixed(1)}`;
   }
 
-  const xs = [...centers.map((p) => p.x), tipX, neckX];
-  const ys = [...centers.map((p) => p.y), tipY, neckY];
-  const left = Math.min(...xs) - margin;
-  const top = Math.min(...ys) - margin;
-  const right = Math.max(...xs) + margin;
-  const bottom = Math.max(...ys) + margin;
+  let left: number;
+  let top: number;
+  let right: number;
+  let bottom: number;
+
+  if (cells.length === 1) {
+    // Symmetric hit box locked to the grid cell so single arrows don't look shifted.
+    const cellLeft = boardPad + head.col * cellSize;
+    const cellTop = boardPad + head.row * cellSize;
+    left = cellLeft - margin;
+    top = cellTop - margin;
+    right = cellLeft + cellSize + margin;
+    bottom = cellTop + cellSize + margin;
+  } else {
+    const xs = [...centers.map((p) => p.x), tipX, neckX];
+    const ys = [...centers.map((p) => p.y), tipY, neckY];
+    left = Math.min(...xs) - margin;
+    top = Math.min(...ys) - margin;
+    right = Math.max(...xs) + margin;
+    bottom = Math.max(...ys) + margin;
+  }
 
   return {
     pathD,

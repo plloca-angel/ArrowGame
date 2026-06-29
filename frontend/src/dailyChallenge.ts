@@ -1,4 +1,6 @@
-/** Base id for daily puzzles — far outside campaign / prebuilt ranges. */
+import { PREBUILT_MAX_LEVEL } from "./prebuiltChunks";
+
+/** Legacy base — daily puzzles now map into the prebuilt campaign pool. */
 export const DAILY_LEVEL_BASE = 9_000_001;
 
 /** UTC date key shared by every player (YYYY-MM-DD). */
@@ -18,12 +20,17 @@ function hashDateKey(key: string): number {
   return h >>> 0;
 }
 
-/** Same level id for all users on a given UTC day. */
+/**
+ * Same prebuilt level for all users on a given UTC day (instant chunk load —
+ * no live generation on the JS thread).
+ */
 export function getDailyChallengeLevelId(date = new Date()): number {
-  let offset = hashDateKey(getUtcDateKey(date)) % 999_990;
-  // Skip special-shape ids (multiples of 5) so daily loads stay fast.
-  while (offset % 5 === 0) offset += 1;
-  return DAILY_LEVEL_BASE + offset;
+  let slot = hashDateKey(getUtcDateKey(date)) % PREBUILT_MAX_LEVEL;
+  let id = slot + 1;
+  // Skip special-shape ids (multiples of 5) — slightly faster boards, no shape mask.
+  while (id % 5 === 0) id += 1;
+  if (id > PREBUILT_MAX_LEVEL) id = 1;
+  return id;
 }
 
 export function formatDailyDateLabel(date = new Date()): string {
