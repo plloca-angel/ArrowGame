@@ -30,6 +30,11 @@ import {
   persistGeneratedLevel,
 } from "./levelPersistence";
 import { scheduleLevelWarmup } from "./levelWarmup";
+import {
+  clearPrebuiltChunkCache,
+  getPrebuiltLevelSync,
+  PREBUILT_MAX_LEVEL,
+} from "./prebuiltChunks";
 
 export type { ArrowDef, Direction, GridCell, Level } from "./levelModel";
 export { cellKey, getLevelActiveCellSet, DIR_VEC } from "./levelModel";
@@ -318,7 +323,7 @@ function tryPlaceSingle(
 }
 
 /** Try flipping arrow directions until the board becomes solvable. */
-function repairDirectionsToSolvable(level: Level): Level | null {
+export function repairLevelDirections(level: Level): Level | null {
   const dirs: Direction[] = ["up", "down", "left", "right"];
   const arrows = level.arrows.map((a) => ({
     cells: a.cells.map((c) => ({ ...c })),
@@ -326,7 +331,8 @@ function repairDirectionsToSolvable(level: Level): Level | null {
   }));
   const rand = mulberry32(level.id * 919191);
 
-  for (let pass = 0; pass < 48; pass++) {
+  for (let pass = 0; pass < 256; pass++) {
+    checkGenDeadline();
     const i = Math.floor(rand() * arrows.length);
     const options = dirs.filter((d) => d !== arrows[i].direction);
     shuffleDirs(options, rand);
@@ -492,7 +498,8 @@ export function generateLevel(id: number, shapeBump = 0): Level {
     : fullRectCellSet(rows, cols);
   const target = activeCells.size;
 
-  for (let attempt = 0; attempt < (special ? 120 : 80); attempt++) {
+  for (let attempt = 0; attempt < (special ? 120 : 100); attempt++) {
+    checkGenDeadline();
     const rand = mulberry32(id * 1000003 + attempt);
     const occupied = new Set<string>();
     const placed: ArrowDef[] = [];
@@ -717,6 +724,7 @@ function buildSolvableFallbackLevel(
   });
 
   for (let attempt = 0; attempt < 80; attempt++) {
+    checkGenDeadline();
     const rand = mulberry32(id * 5003 + attempt);
     const occupied = new Set<string>();
     const placed: ArrowDef[] = [];
@@ -792,7 +800,8 @@ function buildGuaranteedMultiCellLevel(
   const placed: ArrowDef[] = [];
   const occupied = new Set<string>();
 
-  for (let variant = 0; variant < 32; variant++) {
+  for (let variant = 0; variant < 128; variant++) {
+    checkGenDeadline();
     placed.length = 0;
     occupied.clear();
     const rand = mulberry32(id * 424242 + variant * 7919);
@@ -843,7 +852,7 @@ function buildGuaranteedMultiCellLevel(
 
     const draft = levelFromPlaced(id, rows, cols, placed, shape, special);
     if (acceptGeneratedLevel(draft)) return draft;
-    const repaired = repairDirectionsToSolvable(draft);
+    const repaired = repairLevelDirections(draft);
     if (repaired) return repaired;
   }
 
@@ -860,28 +869,11 @@ let activeCacheVersion = 0;
 // shapes (worst observed: 65s). Only used when the bundle matches the current
 // cache version; otherwise we fall back to generating live. Levels beyond the
 // bundled range are always generated live (and then cached for the session).
-type PrebuiltBundle = {
-  version: number;
-  maxLevel: number;
-  levels: Record<string, Level>;
-};
-
-let prebuiltBundle: PrebuiltBundle | null = null;
-
-function getPrebuiltBundle(): PrebuiltBundle {
-  if (!prebuiltBundle) {
-    prebuiltBundle = require("./data/prebuiltLevels.json") as PrebuiltBundle;
-  }
-  return prebuiltBundle;
-}
-
 function getPrebuiltLevel(id: number): Level | undefined {
-  const bundle = getPrebuiltBundle();
-  if (bundle.version !== LEVEL_CACHE_VERSION) return undefined;
-  return bundle.levels[String(id)];
+  return getPrebuiltLevelSync(id, LEVEL_CACHE_VERSION);
 }
 
-export const PREBUILT_MAX_LEVEL = 200;
+export { PREBUILT_MAX_LEVEL };
 
 let persistedLevels = new Map<number, Level>();
 let hydratePromise: Promise<void> | null = null;
@@ -904,6 +896,7 @@ export function hydrateLevelCache(): Promise<void> {
 
 export function clearLevelCache(): void {
   levelCache.clear();
+  clearPrebuiltChunkCache();
 }
 
 export function isLevelCached(id: number): boolean {
@@ -913,6 +906,7 @@ export function isLevelCached(id: number): boolean {
 export function getLevel(id: number): Level {
   if (activeCacheVersion !== LEVEL_CACHE_VERSION) {
     levelCache.clear();
+    clearPrebuiltChunkCache();
     activeCacheVersion = LEVEL_CACHE_VERSION;
   }
   const key = Math.max(1, id);
@@ -947,20 +941,78 @@ export function getLevel(id: number): Level {
 }
 
 /**
+ * Cooperative time budget for procedural generation (build scripts only — the
+ * app never calls buildLevelFresh). The generator is synchronous and CPU-bound,
+ * so it cannot be interrupted by a Promise timeout; instead the inner loops poll
+ * checkGenDeadline() and abort by throwing once the budget is exceeded.
+ */
+class LevelGenTimeoutError extends Error {
+  constructor(id: number) {
+    super(`Level ${id} generation exceeded time budget`);
+    this.name = "LevelGenTimeoutError";
+  }
+}
+
+export function isLevelGenTimeout(err: unknown): boolean {
+  return err instanceof LevelGenTimeoutError;
+}
+
+let genDeadline = Infinity;
+let genDeadlineId = 0;
+
+function checkGenDeadline(): void {
+  if (Date.now() > genDeadline) throw new LevelGenTimeoutError(genDeadlineId);
+}
+
+/**
+ * Deterministic, instant, always-solvable fallback for build scripts when the
+ * procedural generator can't finish within its time budget. Fills every cell of
+ * a full rectangle with single-cell arrows pointing left: only the left column
+ * can escape first, then the next column, etc. — a guaranteed greedy solve with
+ * blocked starts and full grid fill. Lower visual variety than a generated
+ * level, but valid, so the campaign never has to live-generate (and freeze).
+ */
+export function buildTrivialSolvableLevel(id: number): Level {
+  const key = Math.max(1, id);
+  const { rows, cols } = getLevelDimensions(key);
+  const placed: ArrowDef[] = [];
+  for (let c = cols - 1; c >= 0; c--) {
+    for (let r = rows - 1; r >= 0; r--) {
+      placed.push({ cells: [{ row: r, col: c }], direction: "left" });
+    }
+  }
+  return levelFromPlaced(key, rows, cols, placed, null, false);
+}
+
+/**
  * Runs the procedural generator from scratch, bypassing both the session cache
  * and the prebuilt bundle. Used by the build-time prebuild script so re-running
  * it always regenerates rather than reading back its own previous output.
+ *
+ * Pass `budgetMs` to bound each shape-bump attempt; on timeout it throws a
+ * LevelGenTimeoutError (detect via isLevelGenTimeout) so callers can fall back.
  */
-export function buildLevelFresh(id: number): Level {
+export function buildLevelFresh(
+  id: number,
+  opts?: { budgetMs?: number }
+): Level {
   const key = Math.max(1, id);
+  // Shape bumps only change special-shape variants; for full rectangles the
+  // generator ignores the bump (identical result), so a single pass suffices.
   const shapeBumps = isSpecialShapeLevel(key) ? [0, 13, 29, 41, 57] : [0];
   let lastError: unknown;
   for (const bump of shapeBumps) {
+    if (opts?.budgetMs) {
+      genDeadline = Date.now() + opts.budgetMs;
+      genDeadlineId = key;
+    }
     try {
       const level = generateLevel(key, bump);
       if (passesAcceptance(level)) return sanitizeLevelArrowDirections(level);
     } catch (err) {
       lastError = err;
+    } finally {
+      genDeadline = Infinity;
     }
   }
   if (lastError instanceof Error) throw lastError;

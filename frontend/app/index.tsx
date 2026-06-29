@@ -15,8 +15,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "../src/SettingsContext";
 import { loadProgress, Progress, loadEntitlements, Entitlements, isLevelUnlocked, getLevelStars, loadDailyChallenge, DailyChallengeState } from "../src/storage";
 import { RADIUS, SPACING } from "../src/theme";
-import { formatDailyDateLabel, formatDailyTime, getDailyChallengeLevelId } from "../src/dailyChallenge";
+import { formatDailyDateLabel, formatDailyTime } from "../src/dailyChallenge";
 import { scheduleLevelWarmup } from "../src/levelWarmup";
+import {
+  preloadLevelsModule,
+  primePlayLevel,
+  warmChunkForLevel,
+} from "../src/levelPreload";
 
 const LEVELS_PER_PAGE = 25;
 
@@ -73,13 +78,27 @@ export default function Home() {
   const completed = progress?.completedCount ?? 0;
   const isFirstPlay = completed === 0;
 
+  useEffect(() => {
+    if (!progress) return;
+    const current = progress.currentLevel;
+    const timer = setTimeout(() => {
+      warmChunkForLevel(current);
+      warmChunkForLevel(current + 1);
+      primePlayLevel(current);
+      preloadLevelsModule();
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [progress?.currentLevel]);
+
   const warmLevelsForPlay = (currentLevel: number) => {
-    void import("../src/levels").then(({ getLevel }) => {
-      getLevel(currentLevel);
-      getLevel(currentLevel + 1);
-      getLevel(getDailyChallengeLevelId());
-    });
-    scheduleLevelWarmup(currentLevel, currentLevel + 1, getDailyChallengeLevelId());
+    // Only warm prebuilt neighbours. The daily level is live-generated, so it
+    // must NOT be background-warmed (it would block the JS thread); the game
+    // screen generates it on demand with a loading spinner.
+    warmChunkForLevel(currentLevel);
+    warmChunkForLevel(currentLevel + 1);
+    primePlayLevel(currentLevel);
+    primePlayLevel(currentLevel + 1);
+    scheduleLevelWarmup(currentLevel, currentLevel + 1);
   };
 
   const onPlayDaily = () => {

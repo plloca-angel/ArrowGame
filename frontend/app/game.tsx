@@ -58,6 +58,12 @@ import {
   levelHasMisleadingMoves,
 } from "../src/levelSolvability";
 import { computeLiveFlight, toLiveArrow } from "../src/gameBoard";
+import {
+  getPlayLevelSync,
+  primePlayLevel,
+  resolvePlayLevel,
+  warmChunkForLevel,
+} from "../src/levelPreload";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -76,6 +82,19 @@ type ArrowState = {
 type GameStatus = "playing" | "won" | "stuck";
 
 const STEP_MS = 135;
+
+function runTrackedAnimation(
+  trackAnimation: (anim: Animated.CompositeAnimation) => Animated.CompositeAnimation,
+  anim: Animated.CompositeAnimation,
+  timeoutMs: number
+): Promise<void> {
+  return Promise.race([
+    new Promise<void>((resolve) => {
+      trackAnimation(anim).start(() => resolve());
+    }),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
 
 const ARROW_GLOW = {
   hint: { color: "#f8ff5c", glow: "rgba(248, 255, 92, 0.55)" },
@@ -188,16 +207,39 @@ export default function Game() {
 
   useEffect(() => {
     levelRef.current = level;
-    levelHasTrapsRef.current = level ? levelHasMisleadingMoves(level) : false;
+    if (!level) {
+      levelHasTrapsRef.current = false;
+      return;
+    }
+    let cancelled = false;
+    const frame = requestAnimationFrame(() => {
+      if (cancelled) return;
+      levelHasTrapsRef.current = levelHasMisleadingMoves(level);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
   }, [level]);
 
   useEffect(() => {
     let cancelled = false;
     retryCountRef.current = 0;
+
+    const sync = getPlayLevelSync(levelId);
+    if (sync) {
+      setLevel(sync);
+      warmChunkForLevel(levelId + 1);
+      primePlayLevel(levelId + 1);
+      return;
+    }
+
     setLevel(null);
-    void import("../src/levels").then(({ getLevel }) => {
+    void resolvePlayLevel(levelId).then((loaded) => {
       if (cancelled) return;
-      setLevel(getLevel(levelId));
+      setLevel(loaded);
+      warmChunkForLevel(levelId + 1);
+      primePlayLevel(levelId + 1);
     });
     return () => {
       cancelled = true;
@@ -265,17 +307,26 @@ export default function Game() {
     activeSlidesRef.current = activeSlides;
   }, [activeSlides]);
 
+  // Only remeasure when the level (and thus board dimensions) actually changes.
+  // Retrying the same level must NOT wipe the locked layout, or arrows flash at
+  // the wrong size/position before onLayout re-measures.
   useEffect(() => {
     setStableLayout(null);
     setBoardSpace({ w: 0, h: 0 });
-  }, [level, resetSignal]);
+  }, [level?.id]);
 
   useEffect(() => {
     if (boardSpace.w <= 0 || boardSpace.h <= 0) return;
     // Keep cell size frozen while arrows slide; refit when idle so the grid
     // doesn't overflow after chrome (ads, safe area) settles.
     if (activeSlides.length > 0 || slidingIdsRef.current.size > 0) return;
-    setStableLayout({ cellSize, boardPad });
+    // Avoid creating a new object when nothing changed — prevents redundant
+    // re-renders (and a subtle jitter) each time a slide finishes.
+    setStableLayout((prev) =>
+      prev && prev.cellSize === cellSize && prev.boardPad === boardPad
+        ? prev
+        : { cellSize, boardPad }
+    );
   }, [boardSpace, cellSize, boardPad, activeSlides.length]);
 
   const slidingIdSet = useMemo(
@@ -297,6 +348,8 @@ export default function Game() {
     }
     slideResolversRef.current.clear();
     setActiveSlides([]);
+    activeMovesRef.current = 0;
+    firingIdsRef.current.clear();
   };
 
   const trackAnimation = (anim: Animated.CompositeAnimation) => {
@@ -359,7 +412,7 @@ export default function Game() {
       clearTimeout(settleTimerRef.current);
       settleTimerRef.current = null;
     }
-  }, [level, resetSignal]);
+  }, [level?.id, resetSignal]);
 
   useEffect(() => {
     if (status !== "playing") return;
@@ -370,7 +423,7 @@ export default function Game() {
       setElapsedMs(next);
     }, 250);
     return () => clearInterval(id);
-  }, [status, level, resetSignal]);
+  }, [status, level?.id, resetSignal]);
 
   const handleSlideFrame = useCallback(
     (id: string, visual: GridCell[], logical: GridCell[]) => {
@@ -421,10 +474,31 @@ export default function Game() {
     if (motionToken !== motionTokenRef.current) return;
 
     const track = buildMovementTrack(startCells, direction, totalSteps);
+    const slideTimeoutMs = Math.max(
+      2500,
+      (reducedMotion ? 36 : STEP_MS) * Math.max(1, totalSteps) + 800
+    );
 
     return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+
+      // Fallback: if the native slide never reports completion (dropped frames,
+      // unmount race), tear the sprite down ourselves so no arrow stays stranded.
+      const timer = setTimeout(() => {
+        slidingIdsRef.current.delete(arrowId);
+        setActiveSlides((prev) => prev.filter((s) => s.id !== arrowId));
+        slideResolversRef.current.delete(arrowId);
+        finish();
+      }, slideTimeoutMs);
+
       slidingIdsRef.current.add(arrowId);
-      slideResolversRef.current.set(arrowId, resolve);
+      slideResolversRef.current.set(arrowId, finish);
       setActiveSlides((prev) => [
         ...prev,
         {
@@ -477,41 +551,39 @@ export default function Game() {
     right: "right",
   };
 
-  const shakeAnim = (
+  const shakeAnim = async (
     rotateShake: Animated.Value,
     reducedMotion: boolean,
     motionToken: number
-  ) =>
-    new Promise<void>((resolve) => {
-      if (reducedMotion || motionToken !== motionTokenRef.current) {
-        resolve();
-        return;
-      }
-      trackAnimation(
-        Animated.sequence([
-          Animated.timing(rotateShake, {
-            toValue: 1,
-            duration: 45,
-            useNativeDriver: true,
-          }),
-          Animated.timing(rotateShake, {
-            toValue: -1,
-            duration: 45,
-            useNativeDriver: true,
-          }),
-          Animated.timing(rotateShake, {
-            toValue: 0.6,
-            duration: 40,
-            useNativeDriver: true,
-          }),
-          Animated.timing(rotateShake, {
-            toValue: 0,
-            duration: 40,
-            useNativeDriver: true,
-          }),
-        ])
-      ).start(() => resolve());
-    });
+  ) => {
+    if (reducedMotion || motionToken !== motionTokenRef.current) return;
+    await runTrackedAnimation(
+      trackAnimation,
+      Animated.sequence([
+        Animated.timing(rotateShake, {
+          toValue: 1,
+          duration: 45,
+          useNativeDriver: true,
+        }),
+        Animated.timing(rotateShake, {
+          toValue: -1,
+          duration: 45,
+          useNativeDriver: true,
+        }),
+        Animated.timing(rotateShake, {
+          toValue: 0.6,
+          duration: 40,
+          useNativeDriver: true,
+        }),
+        Animated.timing(rotateShake, {
+          toValue: 0,
+          duration: 40,
+          useNativeDriver: true,
+        }),
+      ]),
+      500
+    );
+  };
 
   const triggerGameOver = () => {
     activeMovesRef.current = 0;
@@ -644,6 +716,24 @@ export default function Game() {
       checkWin(list);
     }
   };
+
+  // Recover from hung slide/fade promises that never resolve (orphaned Animated values).
+  useEffect(() => {
+    if (status !== "playing") return;
+    const id = setInterval(() => {
+      if (
+        activeMovesRef.current > 0 &&
+        activeSlidesRef.current.length === 0 &&
+        slidingIdsRef.current.size === 0
+      ) {
+        activeMovesRef.current = 0;
+        firingIdsRef.current.clear();
+        tryFinalizeBoard();
+        scheduleBoardSettle();
+      }
+    }, 2000);
+    return () => clearInterval(id);
+  }, [status, level?.id, resetSignal]);
 
   const executeFireArrow = async (arrow: ArrowState) => {
     if (statusRef.current !== "playing") return;
@@ -778,16 +868,16 @@ export default function Game() {
         }
 
         haptic("success");
-        await new Promise<void>((resolve) => {
-          trackAnimation(
-            Animated.timing(live.fade, {
-              toValue: 0,
-              duration: settings.reducedMotion ? 80 : 240,
-              easing: Easing.out(Easing.cubic),
-              useNativeDriver: true,
-            })
-          ).start(() => resolve());
-        });
+        await runTrackedAnimation(
+          trackAnimation,
+          Animated.timing(live.fade, {
+            toValue: 0,
+            duration: settings.reducedMotion ? 80 : 240,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+          settings.reducedMotion ? 200 : 450
+        );
         if (
           statusRef.current !== "playing" ||
           motionToken !== motionTokenRef.current
@@ -840,6 +930,9 @@ export default function Game() {
   };
 
   const onNext = async () => {
+    const nextId = levelId + 1;
+    warmChunkForLevel(nextId);
+    primePlayLevel(nextId);
     try {
       if (!ents?.removeAds && levelId % 2 === 0) {
         await presentInterstitialAd();
@@ -850,11 +943,14 @@ export default function Game() {
     haptic("medium");
     router.replace({
       pathname: "/game",
-      params: { level: String(levelId + 1) },
+      params: { level: String(nextId) },
     });
   };
 
   const onSkip = async () => {
+    const nextId = levelId + 1;
+    warmChunkForLevel(nextId);
+    primePlayLevel(nextId);
     try {
       if (!ents?.removeAds) {
         await presentInterstitialAd();
@@ -866,7 +962,7 @@ export default function Game() {
     await skipLevel(levelId);
     router.replace({
       pathname: "/game",
-      params: { level: String(levelId + 1) },
+      params: { level: String(nextId) },
     });
   };
 

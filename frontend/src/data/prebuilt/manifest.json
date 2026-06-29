@@ -1,0 +1,67 @@
+{
+  "version": 23,
+  "chunkSize": 20,
+  "maxLevel": 200,
+  "chunks": [
+    {
+      "index": 1,
+      "start": 1,
+      "end": 20,
+      "file": "chunk-001.json"
+    },
+    {
+      "index": 2,
+      "start": 21,
+      "end": 40,
+      "file": "chunk-002.json"
+    },
+    {
+      "index": 3,
+      "start": 41,
+      "end": 60,
+      "file": "chunk-003.json"
+    },
+    {
+      "index": 4,
+      "start": 61,
+      "end": 80,
+      "file": "chunk-004.json"
+    },
+    {
+      "index": 5,
+      "start": 81,
+      "end": 100,
+      "file": "chunk-005.json"
+    },
+    {
+      "index": 6,
+      "start": 101,
+      "end": 120,
+      "file": "chunk-006.json"
+    },
+    {
+      "index": 7,
+      "start": 121,
+      "end": 140,
+      "file": "chunk-007.json"
+    },
+    {
+      "index": 8,
+      "start": 141,
+      "end": 160,
+      "file": "chunk-008.json"
+    },
+    {
+      "index": 9,
+      "start": 161,
+      "end": 180,
+      "file": "chunk-009.json"
+    },
+    {
+      "index": 10,
+      "start": 181,
+      "end": 200,
+      "file": "chunk-010.json"
+    }
+  ]
+}

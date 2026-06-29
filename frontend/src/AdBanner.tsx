@@ -7,6 +7,7 @@ import { useSettings } from "./SettingsContext";
 import { loadEntitlements } from "./storage";
 import { RADIUS, SPACING } from "./theme";
 import { shouldUseNativeAds } from "./ads/nativeGate";
+import { ADS_ENABLED } from "./ads/adsConfig";
 
 // In Expo Go we show a Google-style test banner. Native builds use AdMob (or test units).
 // Hidden when user has the "removeAds" entitlement.
@@ -25,7 +26,7 @@ export function AdBanner({ visible = true }: { visible?: boolean }) {
     };
   }, []);
 
-  if (!visible || removeAds) return null;
+  if (!ADS_ENABLED || !visible || removeAds) return null;
 
   const previewMode = !shouldUseNativeAds();
 

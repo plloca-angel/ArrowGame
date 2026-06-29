@@ -92,8 +92,8 @@ export function SlidingArrowView({
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf);
-      // If the view unmounts mid-slide (layout churn), finish so arrows don't freeze.
-      if (!finished && getMotionToken() === motionToken) {
+      // Always finish so slide promises and arrow state cannot hang.
+      if (!finished) {
         finish();
       }
     };
