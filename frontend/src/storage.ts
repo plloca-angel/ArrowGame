@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getUtcDateKey } from "./dailyChallenge";
+import { MAX_CAMPAIGN_LEVEL } from "./campaign";
 
 const PROGRESS_KEY = "arrow_escape_progress_v2";
 const SETTINGS_KEY = "arrow_escape_settings_v1";
@@ -8,7 +9,7 @@ const DEVICE_KEY = "arrow_escape_device_id_v1";
 
 // ---------- Progress ----------
 export type Progress = {
-  currentLevel: number; // next level to play (infinite)
+  currentLevel: number; // next level to play (capped at MAX + 1)
   completedCount: number;
   totalStars: number;
   bestByLevel: Record<number, { stars: number; bestMoves: number }>;
@@ -25,7 +26,11 @@ export async function loadProgress(): Promise<Progress> {
   try {
     const raw = await AsyncStorage.getItem(PROGRESS_KEY);
     if (!raw) return newProgress();
-    return { ...newProgress(), ...JSON.parse(raw) };
+    const parsed = { ...newProgress(), ...JSON.parse(raw) } as Progress;
+    if (parsed.currentLevel > MAX_CAMPAIGN_LEVEL + 1) {
+      parsed.currentLevel = MAX_CAMPAIGN_LEVEL + 1;
+    }
+    return parsed;
   } catch {
     return newProgress();
   }
@@ -36,7 +41,8 @@ export async function saveProgress(p: Progress) {
 }
 
 export function isLevelUnlocked(p: Progress, levelId: number): boolean {
-  return levelId >= 1 && levelId <= p.currentLevel;
+  if (levelId < 1 || levelId > MAX_CAMPAIGN_LEVEL) return false;
+  return levelId <= p.currentLevel;
 }
 
 export function getLevelStars(p: Progress, levelId: number): number {
@@ -65,14 +71,18 @@ export async function recordWin(
     (s, c) => s + c.stars,
     0
   );
-  if (levelId >= p.currentLevel) p.currentLevel = levelId + 1;
+  if (levelId >= p.currentLevel) {
+    p.currentLevel = Math.min(levelId + 1, MAX_CAMPAIGN_LEVEL + 1);
+  }
   await saveProgress(p);
   return p;
 }
 
 export async function skipLevel(levelId: number): Promise<Progress> {
   const p = await loadProgress();
-  if (levelId >= p.currentLevel) p.currentLevel = levelId + 1;
+  if (levelId >= p.currentLevel) {
+    p.currentLevel = Math.min(levelId + 1, MAX_CAMPAIGN_LEVEL + 1);
+  }
   await saveProgress(p);
   return p;
 }

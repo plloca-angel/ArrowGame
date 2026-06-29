@@ -22,6 +22,12 @@ import {
   primePlayLevel,
   warmChunkForLevel,
 } from "../src/levelPreload";
+import {
+  MAX_CAMPAIGN_LEVEL,
+  displayCampaignLevel,
+  hasFinishedCampaign,
+  isBeyondCampaign,
+} from "../src/campaign";
 
 const LEVELS_PER_PAGE = 25;
 
@@ -73,14 +79,17 @@ export default function Home() {
     return () => loop.stop();
   }, [glow, settings.reducedMotion]);
 
-  const nextLevel = progress?.currentLevel ?? 1;
+  const nextLevel = progress
+    ? displayCampaignLevel(progress)
+    : 1;
+  const campaignComplete = progress ? hasFinishedCampaign(progress) : false;
   const totalStars = progress?.totalStars ?? 0;
   const completed = progress?.completedCount ?? 0;
   const isFirstPlay = completed === 0;
 
   useEffect(() => {
     if (!progress) return;
-    const current = progress.currentLevel;
+    const current = Math.min(progress.currentLevel, MAX_CAMPAIGN_LEVEL);
     const dailyId = getDailyChallengeLevelId();
     const timer = setTimeout(() => {
       warmChunkForLevel(current);
@@ -95,13 +104,18 @@ export default function Home() {
 
   const warmLevelsForPlay = (currentLevel: number) => {
     const dailyId = getDailyChallengeLevelId();
-    warmChunkForLevel(currentLevel);
-    warmChunkForLevel(currentLevel + 1);
+    const capped = Math.min(currentLevel, MAX_CAMPAIGN_LEVEL);
+    warmChunkForLevel(capped);
+    if (capped < MAX_CAMPAIGN_LEVEL) {
+      warmChunkForLevel(capped + 1);
+    }
     warmChunkForLevel(dailyId);
-    primePlayLevel(currentLevel);
-    primePlayLevel(currentLevel + 1);
+    primePlayLevel(capped);
+    if (capped < MAX_CAMPAIGN_LEVEL) {
+      primePlayLevel(capped + 1);
+    }
     primePlayLevel(dailyId);
-    scheduleLevelWarmup(currentLevel, currentLevel + 1);
+    scheduleLevelWarmup(capped, Math.min(capped + 1, MAX_CAMPAIGN_LEVEL));
   };
 
   const onPlayDaily = () => {
@@ -113,12 +127,18 @@ export default function Home() {
   };
 
   const onPlay = () => {
+    if (campaignComplete) {
+      router.push("/coming-soon");
+      haptic("medium");
+      return;
+    }
     warmLevelsForPlay(nextLevel);
     router.push({ pathname: "/game", params: { level: String(nextLevel) } });
     haptic("medium");
   };
 
   const onSelectLevel = (levelId: number) => {
+    if (isBeyondCampaign(levelId)) return;
     if (!progress || !isLevelUnlocked(progress, levelId)) {
       haptic("error");
       return;
@@ -135,10 +155,17 @@ export default function Home() {
   };
 
   const pageStart = levelPage * LEVELS_PER_PAGE + 1;
-  const pageEnd = pageStart + LEVELS_PER_PAGE - 1;
-  const levelIds = Array.from({ length: LEVELS_PER_PAGE }, (_, i) => pageStart + i);
+  const pageEnd = Math.min(
+    pageStart + LEVELS_PER_PAGE - 1,
+    MAX_CAMPAIGN_LEVEL
+  );
+  const levelIds = Array.from(
+    { length: Math.max(0, pageEnd - pageStart + 1) },
+    (_, i) => pageStart + i
+  );
   const canPrevPage = levelPage > 0;
-  const canNextPage = true;
+  const maxLevelPage = Math.floor((MAX_CAMPAIGN_LEVEL - 1) / LEVELS_PER_PAGE);
+  const canNextPage = levelPage < maxLevelPage;
 
   const titleShadow = settings.reducedMotion ? 20 : glow.interpolate({
     inputRange: [0, 1],
@@ -384,7 +411,11 @@ export default function Home() {
           ]}
         >
           <Text style={styles.playLabel}>
-            {isFirstPlay ? "PLAY" : `CONTINUE · LV ${nextLevel}`}
+            {campaignComplete
+              ? "MORE LEVELS SOON"
+              : isFirstPlay
+              ? "PLAY"
+              : `CONTINUE · LV ${nextLevel}`}
           </Text>
           <Ionicons name="arrow-forward" size={20} color="#02141a" />
         </Pressable>

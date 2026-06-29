@@ -65,6 +65,10 @@ import {
   resolvePlayLevel,
   warmChunkForLevel,
 } from "../src/levelPreload";
+import {
+  MAX_CAMPAIGN_LEVEL,
+  isBeyondCampaign,
+} from "../src/campaign";
 
 type ArrowStatus = "idle" | "flying" | "escaped" | "broken";
 
@@ -233,14 +237,27 @@ export default function Game() {
   }, [level]);
 
   useEffect(() => {
+    if (isDailyMode) return;
+    if (isBeyondCampaign(levelId)) {
+      router.replace("/coming-soon");
+    }
+  }, [isDailyMode, levelId, router]);
+
+  useEffect(() => {
     let cancelled = false;
     retryCountRef.current = 0;
+
+    if (!isDailyMode && isBeyondCampaign(levelId)) {
+      return;
+    }
 
     const sync = getPlayLevelSync(levelId);
     if (sync) {
       setLevel(sync);
-      warmChunkForLevel(levelId + 1);
-      primePlayLevel(levelId + 1);
+      if (levelId < MAX_CAMPAIGN_LEVEL) {
+        warmChunkForLevel(levelId + 1);
+        primePlayLevel(levelId + 1);
+      }
       return;
     }
 
@@ -248,13 +265,15 @@ export default function Game() {
     void resolvePlayLevel(levelId).then((loaded) => {
       if (cancelled) return;
       setLevel(loaded);
-      warmChunkForLevel(levelId + 1);
-      primePlayLevel(levelId + 1);
+      if (levelId < MAX_CAMPAIGN_LEVEL) {
+        warmChunkForLevel(levelId + 1);
+        primePlayLevel(levelId + 1);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [levelId]);
+  }, [levelId, isDailyMode]);
 
   const activeCellSet = useMemo(
     () => (level ? getLevelActiveCellSet(level) : new Set<string>()),
@@ -969,6 +988,11 @@ export default function Game() {
 
   const onNext = async () => {
     const nextId = levelId + 1;
+    if (!isDailyMode && nextId > MAX_CAMPAIGN_LEVEL) {
+      haptic("medium");
+      router.replace("/coming-soon");
+      return;
+    }
     warmChunkForLevel(nextId);
     primePlayLevel(nextId);
     try {
@@ -986,6 +1010,7 @@ export default function Game() {
   };
 
   const onSkip = async () => {
+    if (levelId >= MAX_CAMPAIGN_LEVEL) return;
     const nextId = levelId + 1;
     warmChunkForLevel(nextId);
     primePlayLevel(nextId);
@@ -1368,13 +1393,18 @@ export default function Game() {
         <Pressable
           testID="game-skip-btn"
           onPress={onSkip}
-          disabled={isDailyMode}
+          disabled={isDailyMode || levelId >= MAX_CAMPAIGN_LEVEL}
           style={({ pressed }) => [
             styles.actionChip,
             {
               backgroundColor: colors.surface,
               borderColor: colors.border,
-              opacity: isDailyMode ? 0.35 : pressed ? 0.7 : 1,
+              opacity:
+                isDailyMode || levelId >= MAX_CAMPAIGN_LEVEL
+                  ? 0.35
+                  : pressed
+                  ? 0.7
+                  : 1,
             },
           ]}
         >
@@ -1464,15 +1494,40 @@ export default function Game() {
               </Pressable>
               {status === "won" ? (
                 <Pressable
-                  testID={isDailyMode ? "modal-home-btn" : "modal-next-btn"}
-                  onPress={isDailyMode ? onHome : onNext}
+                  testID={
+                    isDailyMode
+                      ? "modal-home-btn"
+                      : levelId >= MAX_CAMPAIGN_LEVEL
+                      ? "modal-more-soon-btn"
+                      : "modal-next-btn"
+                  }
+                  onPress={
+                    isDailyMode
+                      ? onHome
+                      : levelId >= MAX_CAMPAIGN_LEVEL
+                      ? () => {
+                          haptic("medium");
+                          router.replace("/coming-soon");
+                        }
+                      : onNext
+                  }
                   style={[styles.modalBtn, { backgroundColor: colors.cyan }]}
                 >
                   <Text style={[styles.modalBtnLabel, { color: "#02141a" }]}>
-                    {isDailyMode ? "HOME" : "NEXT"}
+                    {isDailyMode
+                      ? "HOME"
+                      : levelId >= MAX_CAMPAIGN_LEVEL
+                      ? "MORE SOON"
+                      : "NEXT"}
                   </Text>
                   <Ionicons
-                    name={isDailyMode ? "home" : "arrow-forward"}
+                    name={
+                      isDailyMode
+                        ? "home"
+                        : levelId >= MAX_CAMPAIGN_LEVEL
+                        ? "rocket-outline"
+                        : "arrow-forward"
+                    }
                     size={18}
                     color="#02141a"
                   />
